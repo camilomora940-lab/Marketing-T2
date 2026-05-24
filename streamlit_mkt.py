@@ -608,6 +608,14 @@ with tab_simulator:
             help="Porcentaje de descuento a ofrecer en la campaña"
         )
 
+        # Presupuesto de campaña
+        campaign_budget = st.number_input(
+            "Presupuesto de campaña (USD)",
+            min_value=1000, max_value=1_000_000,
+            value=50_000, step=5000,
+            help="Inversión total en la campaña promocional (ads, comunicación, etc.)"
+        )
+
         # Canal
         channels = st.multiselect(
             "Canales de adquisición a activar",
