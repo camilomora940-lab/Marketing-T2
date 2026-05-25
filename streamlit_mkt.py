@@ -386,6 +386,54 @@ def run_lca_socio(_df):
         return None, None, None, None, False
 
 
+@st.cache_data
+def build_enriched(_df_orders, _df_customers_raw):
+    """
+    Merge completo orders + customers con todas las variables originales.
+    Devuelve el DataFrame enriquecido y la tabla de co-compra por categoría preferida.
+    """
+    # Merge: cada fila = una orden, con los atributos del cliente
+    df_merged = _df_orders.merge(
+        _df_customers_raw[[
+            'customer_id', 'gender', 'age', 'country',
+            'membership_tier', 'acquisition_channel',
+            'preferred_category', 'days_since_last_purchase',
+            'total_orders', 'total_spend_usd', 'churned',
+            'newsletter_subscribed', 'returns_made', 'wishlist_items',
+        ]],
+        on='customer_id', how='left'
+    )
+
+    # Revenue por segmento x categoría de producto
+    seg_cat = df_merged.groupby(['preferred_category', 'category']).agg(
+        n_orders=('order_id', 'count'),
+        revenue=('total_amount_usd', 'sum'),
+        avg_ticket=('total_amount_usd', 'mean'),
+        avg_discount=('discount_pct', 'mean'),
+        pct_returned=('returned', 'mean'),
+    ).reset_index()
+
+    # Co-compra: clientes cuya categoría preferida es X → ¿qué otras categorías compran?
+    copurchase = df_merged.groupby(['preferred_category', 'category']).agg(
+        n_customers=('customer_id', 'nunique'),
+        revenue=('total_amount_usd', 'sum'),
+    ).reset_index()
+    # Excluir cuando la categoría comprada == categoría preferida (compra esperada)
+    copurchase_cross = copurchase[copurchase['preferred_category'] != copurchase['category']].copy()
+
+    # Revenue mensual por categoría de producto
+    df_merged['order_date'] = pd.to_datetime(_df_orders['order_date'])
+    monthly_cat = df_merged.groupby(['year', 'month', 'category']).agg(
+        revenue=('total_amount_usd', 'sum'),
+        n_orders=('order_id', 'count'),
+    ).reset_index()
+    monthly_cat['period'] = pd.to_datetime(
+        monthly_cat[['year', 'month']].assign(day=1)
+    )
+
+    return df_merged, seg_cat, copurchase_cross, monthly_cat
+
+
 # ─────────────────────────────────────────────
 # CARGAR DATOS
 # ─────────────────────────────────────────────
@@ -466,7 +514,7 @@ st.markdown("---")
 # ─────────────────────────────────────────────
 # TABS PRINCIPALES
 # ─────────────────────────────────────────────
-tab_datos, tab_rfm_kmeans, tab_socio_kmeans, tab_lca_rfm, tab_lca_socio, tab_perfiles, tab_cruce = st.tabs([
+tab_datos, tab_rfm_kmeans, tab_socio_kmeans, tab_lca_rfm, tab_lca_socio, tab_perfiles, tab_cruce, tab_estrategia = st.tabs([
     "📂 Datos",
     "🔵 K-Means RFM",
     "🟣 K-Means Socio",
@@ -474,6 +522,7 @@ tab_datos, tab_rfm_kmeans, tab_socio_kmeans, tab_lca_rfm, tab_lca_socio, tab_per
     "🟢 LCA Sociodemográfico",
     "📋 Perfiles de Clusters",
     "🔥 Cruce de Segmentos",
+    "🎯 Estrategia Comercial",
 ])
 
 # ════════════════════════════════════════════
@@ -1411,6 +1460,381 @@ with tab_cruce:
             _cols_socio2 = [c for c in tabla_km_lca_socio.columns if c != 'Total']
             st.dataframe(tabla_km_lca_socio.style.background_gradient(cmap='Purples',
                          subset=pd.IndexSlice[_rows_socio2, _cols_socio2]), use_container_width=True)
+
+
+
+# ════════════════════════════════════════════
+# TAB 8: ESTRATEGIA COMERCIAL
+# ════════════════════════════════════════════
+with tab_estrategia:
+    st.markdown('<div class="section-title">🎯 Estrategia Comercial: Categorías y Segmentos</div>', unsafe_allow_html=True)
+
+    with st.spinner("Construyendo dataset enriquecido (orders ✕ customers)..."):
+        df_merged, seg_cat, copurchase_cross, monthly_cat = build_enriched(df_orders_raw, df_customers_raw)
+
+    st.markdown("""
+    <div class="info-box">
+    <strong>Fuente:</strong> Merge completo de <code>orders.csv</code> + <code>customers.csv</code> 
+    ({:,} transacciones de {:,} clientes)<br>
+    <strong>Objetivo:</strong> Identificar qué categorías atacar por segmento, detectar patrones de co-compra
+    y emitir recomendaciones accionables para la empresa.
+    </div>
+    """.format(len(df_merged), df_merged['customer_id'].nunique()), unsafe_allow_html=True)
+
+    # ────────────────────────────────────────────
+    # SECCIÓN 1: REVENUE POR CATEGORÍA DE PRODUCTO
+    # ────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### 📊 1. Revenue y Volumen por Categoría de Producto")
+
+    cat_summary = df_merged.groupby('category').agg(
+        revenue_total=('total_amount_usd', 'sum'),
+        n_orders=('order_id', 'count'),
+        n_clientes=('customer_id', 'nunique'),
+        ticket_prom=('total_amount_usd', 'mean'),
+        desc_prom=('discount_pct', 'mean'),
+        pct_devuelto=('returned', 'mean'),
+    ).reset_index().sort_values('revenue_total', ascending=False)
+    cat_summary.columns = ['Categoría', 'Revenue Total', '# Órdenes',
+                           '# Clientes', 'Ticket Promedio', 'Desc. Medio (%)', 'Tasa Devolución']
+
+    c_kpi1, c_kpi2, c_kpi3 = st.columns(3)
+    c_kpi1.metric("🏆 Top Categoría", cat_summary.iloc[0]['Categoría'],
+                   delta=f"${cat_summary.iloc[0]['Revenue Total']:,.0f} revenue")
+    c_kpi2.metric("⚡ Menor Devolución",
+                   cat_summary.nsmallest(1, 'Tasa Devolución').iloc[0]['Categoría'],
+                   delta=f"{cat_summary.nsmallest(1,'Tasa Devolución').iloc[0]['Tasa Devolución']:.1%} devol.")
+    c_kpi3.metric("💰 Mayor Ticket Medio",
+                   cat_summary.nlargest(1, 'Ticket Promedio').iloc[0]['Categoría'],
+                   delta=f"${cat_summary.nlargest(1,'Ticket Promedio').iloc[0]['Ticket Promedio']:,.0f}")
+
+    col_rev1, col_rev2 = st.columns([1.4, 1])
+    with col_rev1:
+        fig_cat_rev = px.bar(
+            cat_summary, x='Revenue Total', y='Categoría',
+            orientation='h',
+            color='Revenue Total', color_continuous_scale='Viridis',
+            text=cat_summary['Revenue Total'].map(lambda x: f"${x/1e6:.1f}M"),
+            title='<b>Revenue Total por Categoría de Producto</b>',
+        )
+        fig_cat_rev.update_traces(textposition='outside')
+        fig_cat_rev.update_layout(template='plotly_dark', height=480,
+                                   font=dict(family='Inter'), showlegend=False,
+                                   yaxis=dict(autorange='reversed'),
+                                   coloraxis_showscale=False)
+        st.plotly_chart(fig_cat_rev, use_container_width=True)
+
+    with col_rev2:
+        fig_bubble = px.scatter(
+            cat_summary, x='Ticket Promedio', y='Tasa Devolución',
+            size='Revenue Total', color='Desc. Medio (%)',
+            hover_name='Categoría',
+            color_continuous_scale='RdYlGn_r',
+            title='<b>Ticket vs Devolución (tamaño=Revenue)</b>',
+            labels={'Ticket Promedio': 'Ticket Promedio (USD)', 'Tasa Devolución': 'Tasa Devolución'},
+        )
+        fig_bubble.update_layout(template='plotly_dark', height=480, font=dict(family='Inter'))
+        st.plotly_chart(fig_bubble, use_container_width=True)
+
+    st.dataframe(
+        cat_summary.style.format({
+            'Revenue Total': '${:,.0f}',
+            'Ticket Promedio': '${:,.2f}',
+            'Desc. Medio (%)': '{:.1f}%',
+            'Tasa Devolución': '{:.1%}',
+        })
+        .background_gradient(subset=['Revenue Total'], cmap='Greens')
+        .background_gradient(subset=['Tasa Devolución'], cmap='Reds'),
+        use_container_width=True
+    )
+
+    # ────────────────────────────────────────────
+    # SECCIÓN 2: CATEGORÍA PREFERIDA × CATEGORÍA COMPRADA
+    # ────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### 🔄 2. Desglose de Movimiento por Categoría Preferida")
+    st.markdown("""
+    <div class="info-box">
+    Para cada grupo de clientes según su <strong>categoría preferida</strong>,
+    se muestra qué otras categorías compran efectivamente en sus órdenes. 
+    Esto permite detectar oportunidades de <strong>cross-selling</strong>.
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Selector de categoría preferida
+    all_pref_cats = sorted(df_customers_raw['preferred_category'].dropna().unique())
+    sel_pref = st.selectbox(
+        "Selecciona la categoría preferida del segmento de clientes:",
+        options=all_pref_cats,
+        key='sel_pref_cat'
+    )
+
+    # Clientes con esa categoría preferida
+    clientes_pref = df_customers_raw[df_customers_raw['preferred_category'] == sel_pref]['customer_id'].unique()
+    ordenes_pref = df_merged[df_merged['customer_id'].isin(clientes_pref)]
+
+    col_cross1, col_cross2 = st.columns([1.3, 1])
+    with col_cross1:
+        # Qué categorías compran realmente
+        cat_compradas = ordenes_pref.groupby('category').agg(
+            n_ordenes=('order_id', 'count'),
+            revenue=('total_amount_usd', 'sum'),
+            n_clientes=('customer_id', 'nunique'),
+            ticket=('total_amount_usd', 'mean'),
+            desc_medio=('discount_pct', 'mean'),
+        ).reset_index().sort_values('revenue', ascending=False)
+        cat_compradas.columns = ['Categoría Comprada', '# Órdenes', 'Revenue', '# Clientes', 'Ticket Medio', 'Desc. Medio (%)']
+        cat_compradas['Es preferida'] = cat_compradas['Categoría Comprada'] == sel_pref
+
+        fig_cross = px.bar(
+            cat_compradas, x='Categoría Comprada', y='Revenue',
+            color='Es preferida',
+            color_discrete_map={True: '#7c3aed', False: '#2563eb'},
+            text=cat_compradas['Revenue'].map(lambda x: f"${x:,.0f}"),
+            title=f'<b>Compras reales de clientes con preferencia: {sel_pref}</b>',
+        )
+        fig_cross.update_traces(textposition='outside', textfont_size=10)
+        fig_cross.update_layout(template='plotly_dark', height=440, font=dict(family='Inter'),
+                                 showlegend=True, xaxis_tickangle=-35)
+        st.plotly_chart(fig_cross, use_container_width=True)
+
+    with col_cross2:
+        # Pie de distribución
+        fig_cross_pie = px.pie(
+            cat_compradas, values='Revenue', names='Categoría Comprada',
+            title=f'<b>Distribución de Revenue – Clientes pref. {sel_pref}</b>',
+            hole=0.4,
+            color_discrete_sequence=px.colors.qualitative.Vivid,
+        )
+        fig_cross_pie.update_traces(textposition='inside', textinfo='percent+label', textfont_size=11)
+        fig_cross_pie.update_layout(template='plotly_dark', height=440, font=dict(family='Inter'),
+                                     showlegend=False)
+        st.plotly_chart(fig_cross_pie, use_container_width=True)
+
+    st.dataframe(
+        cat_compradas.style.format({
+            'Revenue': '${:,.0f}',
+            'Ticket Medio': '${:,.2f}',
+            'Desc. Medio (%)': '{:.1f}%',
+        })
+        .background_gradient(subset=['Revenue'], cmap='Blues')
+        .apply(lambda row: ['background: rgba(124,58,237,.15)' if row['Es preferida'] else '' for _ in row], axis=1),
+        use_container_width=True, height=260
+    )
+
+    # ────────────────────────────────────────────
+    # SECCIÓN 3: HEATMAP CO-COMPRA GLOBAL
+    # ────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### 🧱 3. Mapa de Co-compra: Categoría Preferida → Categoría Real")
+    st.markdown("""
+    <div class="info-box">
+    El mapa muestra cuánto revenue generan las <strong>compras cruzadas</strong>: 
+    filas = categoría preferida del cliente, columnas = categoría real comprada (excluyendo la misma).
+    Las celdas más oscuras son las mejores oportunidades de <strong>cross-selling</strong>.
+    </div>
+    """, unsafe_allow_html=True)
+
+    pivot_copurchase = copurchase_cross.pivot_table(
+        index='preferred_category', columns='category',
+        values='revenue', aggfunc='sum', fill_value=0
+    )
+    fig_copurchase = px.imshow(
+        pivot_copurchase.values,
+        x=pivot_copurchase.columns.tolist(),
+        y=pivot_copurchase.index.tolist(),
+        color_continuous_scale='Plasma',
+        text_auto=False,
+        title='<b>Revenue de Co-compra: Categoría Preferida × Categoría Real Comprada (USD)</b>',
+        aspect='auto',
+        labels=dict(color='Revenue (USD)', x='Categoría Comprada', y='Categoría Preferida'),
+    )
+    fig_copurchase.update_xaxes(tickangle=-40)
+    fig_copurchase.update_layout(template='plotly_dark', height=540, font=dict(family='Inter', size=11))
+    st.plotly_chart(fig_copurchase, use_container_width=True)
+
+    # Top 5 oportunidades globales de cross-sell
+    top_cross = copurchase_cross.sort_values('revenue', ascending=False).head(10).copy()
+    top_cross.columns = ['Categoría Preferida', 'Categoría Cross-sell', '# Clientes', 'Revenue Cross-sell']
+    st.markdown("**🔥 Top 10 oportunidades de cross-selling por revenue:**")
+    st.dataframe(
+        top_cross.style.format({'Revenue Cross-sell': '${:,.0f}'})
+        .background_gradient(subset=['Revenue Cross-sell'], cmap='YlOrRd'),
+        use_container_width=True
+    )
+
+    # ────────────────────────────────────────────
+    # SECCIÓN 4: ESTRATEGIA POR SEGMENTO
+    # ────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### 🎯 4. Recomendaciones Estratégicas por Segmento RFM (K-Means, k=4)")
+
+    # Enriquecer df con cluster RFM
+    cluster_col = 'cluster_rfmkmeans'
+    if cluster_col not in df.columns:
+        st.warning("Ejecuta primero la pestaña K-Means RFM para generar los clusters.")
+    else:
+        df_strat = df_customers_raw.copy()
+        df_strat['cluster_rfm'] = df['cluster_rfmkmeans'].values
+        df_strat = df_strat.rename(columns={'days_since_last_purchase': 'recency',
+                                             'total_orders': 'frequency',
+                                             'total_spend_usd': 'monetary'})
+
+        # Merge con órdenes
+        df_merged_seg = df_orders_raw.merge(
+            df_strat[['customer_id', 'cluster_rfm', 'recency', 'frequency',
+                       'monetary', 'membership_tier', 'preferred_category']],
+            on='customer_id', how='left'
+        )
+
+        # Revenue por cluster × categoría de producto
+        seg_rev = df_merged_seg.groupby(['cluster_rfm', 'category']).agg(
+            revenue=('total_amount_usd', 'sum'),
+            n_orders=('order_id', 'count'),
+            pct_devuelto=('returned', 'mean'),
+            desc_medio=('discount_pct', 'mean'),
+        ).reset_index()
+
+        # Pivot heatmap
+        pivot_seg_cat = seg_rev.pivot_table(
+            index='cluster_rfm', columns='category',
+            values='revenue', fill_value=0
+        )
+        pivot_seg_cat.index = [f"Cluster {i}" for i in pivot_seg_cat.index]
+
+        fig_seg_cat = px.imshow(
+            pivot_seg_cat.values,
+            x=pivot_seg_cat.columns.tolist(),
+            y=pivot_seg_cat.index.tolist(),
+            color_continuous_scale='YlGnBu',
+            text_auto=False,
+            title='<b>Revenue por Cluster RFM × Categoría de Producto</b>',
+            aspect='auto',
+            labels=dict(color='Revenue (USD)', x='Categoría', y='Cluster RFM'),
+        )
+        fig_seg_cat.update_xaxes(tickangle=-40)
+        fig_seg_cat.update_layout(template='plotly_dark', height=380, font=dict(family='Inter', size=11))
+        st.plotly_chart(fig_seg_cat, use_container_width=True)
+
+        # Top categoría por cluster
+        top_cat_por_cluster = seg_rev.loc[seg_rev.groupby('cluster_rfm')['revenue'].idxmax()][['cluster_rfm', 'category', 'revenue', 'pct_devuelto', 'desc_medio']].copy()
+        top_cat_por_cluster.columns = ['Cluster RFM', 'Top Categoría', 'Revenue', 'Tasa Devolución', 'Desc. Medio (%)']
+        top_cat_por_cluster['Cluster RFM'] = top_cat_por_cluster['Cluster RFM'].map(lambda x: f"Cluster {x}")
+
+        # Perfil de cada cluster (para las recomendaciones)
+        perfil_strat = df_strat.groupby('cluster_rfm').agg(
+            recency=('recency', 'mean'),
+            frequency=('frequency', 'mean'),
+            monetary=('monetary', 'mean'),
+            n_clientes=('customer_id', 'count'),
+        ).round(1)
+
+        # Cards de recomendación
+        st.markdown("#### 📈 Recomendaciones por Cluster")
+
+        ESTRATEGIAS = {
+            'Alto Valor / Alta Frecuencia': (
+                "Programas de fidelidad premium, acceso anticipado a nuevos productos, "
+                "descuentos exclusivos en su categoría top y productos complementarios de alto margen."
+            ),
+            'Valor Medio / Riesgo Churn': (
+                "Campañas de reactivación por email/SMS, descuentos moderados (10–15%) en su "
+                "categoría preferida, recordatorios personalizados de wishlist."
+            ),
+            'Bajo Valor / Potencial Crecimiento': (
+                "Ofertas de entrada agresivas, bundles económicos, suscripciones al newsletter "
+                "con cupón de bienvenida, productos de menor ticket en su categoría preferida."
+            ),
+            'Nuevo / Explorador': (
+                "Onboarding personalizado, recomendaciones de su categoría preferida, "
+                "incentivos para segunda compra (cashback o envío gratis)."
+            ),
+        }
+
+        n_clusters = perfil_strat.shape[0]
+        perfil_sorted = perfil_strat.sort_values('monetary', ascending=False)
+        estrategia_labels = list(ESTRATEGIAS.keys())
+
+        cols_rec = st.columns(n_clusters)
+        for idx_col, (cluster_id, row) in enumerate(perfil_sorted.iterrows()):
+            top_row = top_cat_por_cluster[top_cat_por_cluster['Cluster RFM'] == f"Cluster {cluster_id}"]
+            top_cat = top_row.iloc[0]['Top Categoría'] if len(top_row) > 0 else 'N/A'
+            top_rev = top_row.iloc[0]['Revenue'] if len(top_row) > 0 else 0
+            etiqueta = estrategia_labels[min(idx_col, len(estrategia_labels)-1)]
+            color = CLUSTER_COLORS_4[cluster_id % 4]
+            cols_rec[idx_col].markdown(f"""
+            <div style="background:rgba(22,27,34,.95); border:1.5px solid {color}50;
+                        border-radius:14px; padding:18px 16px; height:100%;">
+                <div style="font-size:.75rem; color:{color}; font-weight:700;
+                            text-transform:uppercase; letter-spacing:.06em;">Cluster {cluster_id}</div>
+                <div style="font-size:1.1rem; font-weight:800; margin:6px 0 4px;">{etiqueta}</div>
+                <hr style="border-color:{color}30; margin:8px 0;">
+                <div style="font-size:.82rem; color:#8b949e; line-height:1.5;">
+                    <b style="color:#e6edf3;">Recency:</b> {row['recency']:.0f}d &nbsp;
+                    <b style="color:#e6edf3;">Freq:</b> {row['frequency']:.1f} &nbsp;
+                    <b style="color:#e6edf3;">Monetary:</b> ${row['monetary']:,.0f}<br>
+                    <b style="color:#e6edf3;">Clientes:</b> {row['n_clientes']:,}<br>
+                    <b style="color:#e6edf3;">Top categoría:</b> {top_cat}<br>
+                    <b style="color:#e6edf3;">Revenue top:</b> ${top_rev:,.0f}
+                </div>
+                <hr style="border-color:{color}30; margin:8px 0;">
+                <div style="font-size:.80rem; color:#94a3b8; line-height:1.6;">
+                    <b style="color:#e6edf3;">💡 Estrategia:</b><br>{ESTRATEGIAS[etiqueta]}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        st.markdown("")
+
+        # Tabla resumen
+        st.markdown("---")
+        st.markdown("#### 📋 Tabla Resumen: Top Categoría y Métricas por Cluster")
+        # Normalizar el índice de perfil_strat a "Cluster X" (string) para que coincida
+        # con top_cat_por_cluster['Cluster RFM'] que ya tiene ese formato
+        perfil_strat_str = perfil_strat.copy()
+        perfil_strat_str.index = [f"Cluster {i}" for i in perfil_strat_str.index]
+        perfil_strat_str.index.name = 'cluster_rfm'
+        tbl_resumen = top_cat_por_cluster.merge(
+            perfil_strat_str.rename(columns={'recency': 'Recency (días)', 'frequency': 'Frequency',
+                                              'monetary': 'Monetary ($)', 'n_clientes': '# Clientes'})
+            .reset_index().rename(columns={'cluster_rfm': 'Cluster RFM'}),
+            on='Cluster RFM', how='left'
+        )
+        tbl_resumen = tbl_resumen.drop_duplicates(subset=['Cluster RFM'])
+        st.dataframe(
+            tbl_resumen[['Cluster RFM', 'Top Categoría', 'Revenue', 'Tasa Devolución',
+                          'Desc. Medio (%)', 'Recency (días)', 'Frequency', 'Monetary ($)', '# Clientes']]
+            .style.format({
+                'Revenue': '${:,.0f}',
+                'Tasa Devolución': '{:.1%}',
+                'Desc. Medio (%)': '{:.1f}%',
+                'Recency (días)': '{:.0f}',
+                'Frequency': '{:.1f}',
+                'Monetary ($)': '${:,.0f}',
+            })
+            .background_gradient(subset=['Revenue'], cmap='Greens')
+            .background_gradient(subset=['Monetary ($)'], cmap='Blues'),
+            use_container_width=True
+        )
+
+        # ────────────────────────────────────────────
+        # SECCIÓN 5: TENDENCIA MENSUAL
+        # ────────────────────────────────────────────
+        st.markdown("---")
+        st.markdown("### 📅 5. Evolución Mensual de Revenue por Categoría")
+
+        top_cats = cat_summary.head(6)['Categoría'].tolist()
+        monthly_top = monthly_cat[monthly_cat['category'].isin(top_cats)].copy()
+
+        fig_monthly = px.line(
+            monthly_top, x='period', y='revenue', color='category',
+            title='<b>Revenue Mensual – Top 6 Categorías</b>',
+            labels={'period': 'Período', 'revenue': 'Revenue (USD)', 'category': 'Categoría'},
+            color_discrete_sequence=px.colors.qualitative.Set1,
+        )
+        fig_monthly.update_layout(template='plotly_dark', height=420, font=dict(family='Inter'),
+                                   hovermode='x unified')
+        st.plotly_chart(fig_monthly, use_container_width=True)
 
 
 # ─────────────────────────────────────────────
