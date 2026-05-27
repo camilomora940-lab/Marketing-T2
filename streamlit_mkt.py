@@ -10,11 +10,10 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib.patches as patches
-import seaborn as sns
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import json
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import silhouette_score
@@ -230,7 +229,16 @@ CATEGORY_MAP = {
     'Travel & Luggage': 10, 'Jewelry & Accessories': 11, 'Pet Supplies': 12, 'Automotive': 13
 }
 
+PAYMENT_MAP = {
+    'Credit Card': 0, 'Debit Card': 1, 'PayPal': 2,
+    'UPI / Digital Wallet': 3, 'Bank Transfer': 4,
+    'Cryptocurrency': 5, 'Buy Now Pay Later': 6
+}
+PAYMENT_INV = {v: k for k, v in PAYMENT_MAP.items()}
+
 CLUSTER_COLORS_4 = ['#7c3aed', '#2563eb', '#059669', '#d97706']
+CLUSTER_COLORS_5 = ['#64748b'] + CLUSTER_COLORS_4  # Gris para el grupo -1
+CLUSTER_COLORS_LCA4 = ['#64748b', '#0ea5e9', '#f43f5e', '#10b981']  # Gris + 3 clusters de LCA
 CLUSTER_COLORS_3 = ['#7c3aed', '#2563eb', '#059669']
 
 # ─────────────────────────────────────────────
@@ -239,7 +247,7 @@ CLUSTER_COLORS_3 = ['#7c3aed', '#2563eb', '#059669']
 @st.cache_data
 def load_data():
     df_orders = pd.read_csv('orders.csv')
-    df_customers = pd.read_csv('customers.csv')
+    df_customers = pd.read_csv('customers_clustered.csv')
     return df_orders, df_customers
 
 
@@ -251,10 +259,12 @@ def prepare_data(_df_customers):
     df['membership_raw'] = df['membership_tier'].copy()
     df['acquisition_raw'] = df['acquisition_channel'].copy()
     df['country_raw'] = df['country'].copy()
+    df['payment_raw'] = df['preferred_payment_method'].copy()
 
     df['gender'] = df['gender'].map(GENDER_MAP)
     df['acquisition_channel'] = df['acquisition_channel'].map(ACQUISITION_MAP)
     df['membership_tier'] = df['membership_tier'].map(MEMBERSHIP_MAP)
+    df['preferred_payment_method'] = df['preferred_payment_method'].map(PAYMENT_MAP)
     df['region'] = df['country'].map(REGION_MAP)
     df['region_code'] = df['region'].map(REGION_CODE)
     df['preferred_category'] = df['preferred_category'].map(CATEGORY_MAP)
@@ -265,125 +275,6 @@ def prepare_data(_df_customers):
         'total_spend_usd': 'monetary'
     })
     return df
-
-
-@st.cache_data
-def run_rfm_kmeans(_df):
-    """KMeans sobre RFM (k=4) con búsqueda de codo y silhouette."""
-    features = ['recency', 'frequency', 'monetary']
-    X = _df[features]
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
-
-    K_range = range(2, 8)
-    inertia, silhouettes = [], []
-    for k in K_range:
-        km = KMeans(n_clusters=k, random_state=123, n_init=10)
-        km.fit(X_scaled)
-        inertia.append(km.inertia_)
-        silhouettes.append(silhouette_score(X_scaled, km.labels_))
-
-    # Modelo final k=4
-    kmeans_rfm = KMeans(n_clusters=4, random_state=123, n_init=10)
-    labels_rfm = kmeans_rfm.fit_predict(X_scaled)
-
-    return labels_rfm, list(K_range), inertia, silhouettes, X_scaled
-
-
-@st.cache_data
-def run_socio_kmeans(_df):
-    """KMeans sobre variables sociodemográficas (k=3) con búsqueda."""
-    features_s = ['age', 'gender', 'acquisition_channel', 'membership_tier']
-    X_s = _df[features_s]
-    scaler_s = StandardScaler()
-    X_scaled_s = scaler_s.fit_transform(X_s)
-
-    K_range = range(2, 8)
-    inertia, silhouettes = [], []
-    for k in K_range:
-        km = KMeans(n_clusters=k, random_state=42, n_init=10)
-        km.fit(X_scaled_s)
-        inertia.append(km.inertia_)
-        silhouettes.append(silhouette_score(X_scaled_s, km.labels_))
-
-    # Modelo final k=3
-    kmeans_socio = KMeans(n_clusters=3, random_state=123, n_init=10)
-    labels_socio = kmeans_socio.fit_predict(X_scaled_s)
-
-    return labels_socio, list(K_range), inertia, silhouettes, X_scaled_s
-
-
-@st.cache_data
-def run_lca_rfm(_df):
-    """LCA (StepMix) sobre RFM (k=4) con BIC y entropía."""
-    try:
-        from stepmix.stepmix import StepMix
-        from stepmix.utils import get_mixed_descriptor
-
-        mixed_data, mixed_descriptor = get_mixed_descriptor(
-            dataframe=_df,
-            gaussian=['recency', 'frequency', 'monetary']
-        )
-
-        K_range = range(2, 6)
-        bic_vals, entropy_vals = [], []
-        for k in K_range:
-            model = StepMix(n_components=k, measurement=mixed_descriptor,
-                            verbose=0, random_state=123)
-            model.fit(mixed_data)
-            bic_vals.append(model.bic(mixed_data))
-            entropy_vals.append(model.relative_entropy(mixed_data))
-
-        # Modelo final k=4
-        lca_rfm = StepMix(n_components=4, measurement=mixed_descriptor,
-                          verbose=0, random_state=123)
-        lca_rfm.fit(mixed_data)
-        labels = lca_rfm.predict(mixed_data)
-
-        return labels, list(K_range), bic_vals, entropy_vals, True
-
-    except ImportError:
-        return None, None, None, None, False
-    except Exception as e:
-        st.error(f"Error LCA RFM: {e}")
-        return None, None, None, None, False
-
-
-@st.cache_data
-def run_lca_socio(_df):
-    """LCA (StepMix) sobre variables sociodemográficas (k=3) con BIC y entropía."""
-    try:
-        from stepmix.stepmix import StepMix
-        from stepmix.utils import get_mixed_descriptor
-
-        mixed_data2, mixed_descriptor2 = get_mixed_descriptor(
-            dataframe=_df,
-            categorical=['gender', 'acquisition_channel', 'membership_tier'],
-            gaussian=['age']
-        )
-
-        K_range = range(2, 8)
-        bic_vals, entropy_vals = [], []
-        for k in K_range:
-            model = StepMix(n_components=k, measurement=mixed_descriptor2,
-                            verbose=0, random_state=123)
-            model.fit(mixed_data2)
-            bic_vals.append(model.bic(mixed_data2))
-            entropy_vals.append(model.relative_entropy(mixed_data2))
-
-        # Modelo final k=3
-        lca_socio = StepMix(n_components=3, measurement=mixed_descriptor2,
-                            verbose=0, random_state=123)
-        lca_socio.fit(mixed_data2)
-        labels = lca_socio.predict(mixed_data2)
-
-        return labels, list(K_range), bic_vals, entropy_vals, True
-
-    except ImportError:
-        return None, None, None, None, False
-    except Exception as e:
-        st.error(f"Error LCA Socio: {e}")
-        return None, None, None, None, False
 
 
 @st.cache_data
@@ -514,15 +405,17 @@ st.markdown("---")
 # ─────────────────────────────────────────────
 # TABS PRINCIPALES
 # ─────────────────────────────────────────────
-tab_datos, tab_rfm_kmeans, tab_socio_kmeans, tab_lca_rfm, tab_lca_socio, tab_perfiles, tab_cruce, tab_estrategia = st.tabs([
-    "📂 Datos",
-    "🔵 K-Means RFM",
-    "🟣 K-Means Socio",
-    "🔶 LCA RFM",
-    "🟢 LCA Sociodemográfico",
-    "📋 Perfiles de Clusters",
-    "🔥 Cruce de Segmentos",
-    "🎯 Estrategia Comercial",
+tab_datos, tab_rfm_kmeans, tab_socio_kmeans, tab_lca_rfm, tab_lca_socio, tab_comp_rfm, tab_comp_socio, tab_perfiles, tab_cruce, tab_estrategia = st.tabs([
+    "1. Datos",
+    "2. K-Means RFM",
+    "3. K-Means Socio",
+    "4. LCA RFM",
+    "5. LCA Socio",
+    "6. Comp. RFM",
+    "7. Comp. Socio",
+    "8. Perfiles",
+    "9. Cruce Segmentos",
+    "10. Estrategia",
 ])
 
 # ════════════════════════════════════════════
@@ -639,53 +532,31 @@ with tab_rfm_kmeans:
     </div>
     """, unsafe_allow_html=True)
 
-    with st.spinner("Ejecutando K-Means RFM (búsqueda de K óptimo)…"):
-        labels_rfm, K_rfm, inertia_rfm, sil_rfm, X_rfm_scaled = run_rfm_kmeans(df)
-
-    df['cluster_rfmkmeans'] = labels_rfm
-
-    # ── Gráficos Codo + Silhouette ──
-    st.markdown("#### 🔍 Selección del K óptimo")
-
-    fig_codo_rfm = make_subplots(rows=1, cols=2, subplot_titles=["Método del Codo", "Silhouette Score"])
-    fig_codo_rfm.add_trace(
-        go.Scatter(x=K_rfm, y=inertia_rfm, mode='lines+markers',
-                   line=dict(color='#7c3aed', width=2),
-                   marker=dict(size=9, color='#7c3aed', symbol='circle'),
-                   name='Inercia'),
-        row=1, col=1
-    )
-    fig_codo_rfm.add_trace(
-        go.Scatter(x=K_rfm, y=sil_rfm, mode='lines+markers',
-                   line=dict(color='#2563eb', width=2),
-                   marker=dict(size=9, color='#2563eb', symbol='square'),
-                   name='Silhouette'),
-        row=1, col=2
-    )
-    # Marcar k=4
-    fig_codo_rfm.add_vline(x=4, line_dash="dash", line_color="#d97706",
-                            annotation_text="k=4 ← elegido", row=1, col=1)
-    fig_codo_rfm.add_vline(x=4, line_dash="dash", line_color="#d97706", row=1, col=2)
-    fig_codo_rfm.update_xaxes(title_text="Número de clusters (k)")
-    fig_codo_rfm.update_yaxes(title_text="Inercia", row=1, col=1)
-    fig_codo_rfm.update_yaxes(title_text="Silhouette Score", row=1, col=2)
-    fig_codo_rfm.update_layout(
-        template='plotly_dark', height=400,
-        font=dict(family='Inter'), showlegend=False,
-        title_text='<b>Selección del número óptimo de clusters – K-Means RFM</b>'
-    )
-    st.plotly_chart(fig_codo_rfm, use_container_width=True)
-
-    # Tabla resumen por k
-    with st.expander("📋 Resumen métricas por K"):
-        summary_df = pd.DataFrame({
-            'k': K_rfm,
-            'Inercia': [f"{v:,.0f}" for v in inertia_rfm],
-            'Silhouette Score': [f"{v:.4f}" for v in sil_rfm]
-        })
-        st.dataframe(summary_df, use_container_width=True)
-
     st.markdown("---")
+    
+    import json
+    import plotly.express as px
+    with open('metrics.json', 'r') as f:
+        metrics = json.load(f)
+
+    st.markdown("#### 🔍 Selección del K óptimo")
+    col1, col2 = st.columns(2)
+    with col1:
+        fig_elbow = px.line(x=metrics['km_rfm']['K'], y=metrics['km_rfm']['inertia'], markers=True,
+                            title='<b>Elbow Method (Inertia)</b>',
+                            labels={'x':'Número de Clusters (k)', 'y':'Inertia'})
+        fig_elbow.update_layout(template='plotly_dark', height=350)
+        fig_elbow.add_vline(x=4, line_dash='dash', line_color='#ff4b4b', annotation_text='K=4 Seleccionado', annotation_position='top right')
+        st.plotly_chart(fig_elbow, use_container_width=True)
+    with col2:
+        fig_silh = px.line(x=metrics['km_rfm']['K'], y=metrics['km_rfm']['silhouette'], markers=True,
+                           title='<b>Silhouette Score</b>',
+                           labels={'x':'Número de Clusters (k)', 'y':'Silhouette Score'})
+        fig_silh.update_layout(template='plotly_dark', height=350)
+        fig_silh.add_vline(x=4, line_dash='dash', line_color='#ff4b4b', annotation_text='K=4 Seleccionado', annotation_position='bottom right')
+        st.plotly_chart(fig_silh, use_container_width=True)
+    st.markdown("---")
+
     st.markdown("#### 📊 Resultado del Clustering (k = 4)")
 
     # Distribución de clusters
@@ -726,36 +597,7 @@ with tab_rfm_kmeans:
             </div>
             """, unsafe_allow_html=True)
 
-    # Scatter 3D RFM
-    st.markdown("#### 🌐 Visualización 3D de Clusters RFM")
-    df_3d_rfm = df.copy()
-    df_3d_rfm['Cluster'] = df_3d_rfm['cluster_rfmkmeans'].astype(str).map(lambda x: f"Cluster {x}")
 
-    fig_3d_rfm = px.scatter_3d(
-        df_3d_rfm, x='recency', y='frequency', z='monetary',
-        color='Cluster',
-        color_discrete_sequence=CLUSTER_COLORS_4,
-        title='<b>K-Means RFM – Visualización 3D (k=4)</b>',
-        labels={'recency': 'Recency (días)', 'frequency': 'Frequency (órdenes)', 'monetary': 'Monetary (USD)'},
-        opacity=0.65,
-    )
-    fig_3d_rfm.update_traces(marker=dict(size=3.5))
-    fig_3d_rfm.update_layout(template='plotly_dark', height=550, font=dict(family='Inter'),
-                               margin=dict(l=0, r=0, b=0, t=50))
-    st.plotly_chart(fig_3d_rfm, use_container_width=True)
-
-    # Perfil por cluster
-    st.markdown("#### 📋 Perfil Medio por Cluster (K-Means RFM)")
-    perfil_rfm_km = df.groupby('cluster_rfmkmeans')[['recency', 'frequency', 'monetary']].mean().round(2)
-    perfil_rfm_km.index = [f"Cluster {i}" for i in perfil_rfm_km.index]
-    perfil_rfm_km.columns = ['Recency (días)', 'Frequency (órdenes)', 'Monetary (USD)']
-    st.dataframe(
-        perfil_rfm_km.style.format("{:.2f}")
-        .background_gradient(subset=['Recency (días)'], cmap='RdYlGn_r')
-        .background_gradient(subset=['Frequency (órdenes)'], cmap='Blues')
-        .background_gradient(subset=['Monetary (USD)'], cmap='Greens'),
-        use_container_width=True
-    )
 
 
 # ════════════════════════════════════════════
@@ -768,54 +610,36 @@ with tab_socio_kmeans:
     <div class="info-box">
     <strong>Variables:</strong> age, gender, acquisition_channel, membership_tier<br>
     <strong>Preprocesamiento:</strong> Estandarización con StandardScaler<br>
-    <strong>Selección de K:</strong> Método del Codo + Silhouette Score → <strong>k = 3</strong>
+    <strong>Variables:</strong> age, gender, acquisition_channel, membership_tier, preferred_payment_method<br>
+    <strong>Preprocesamiento:</strong> Estandarización con StandardScaler<br>
+    <strong>Selección de K:</strong> Método del Codo + Silhouette Score → <strong>k = 4</strong>
     </div>
     """, unsafe_allow_html=True)
 
-    with st.spinner("Ejecutando K-Means Sociodemográfico (búsqueda de K óptimo)…"):
-        labels_socio_km, K_socio, inertia_socio, sil_socio, X_socio_scaled = run_socio_kmeans(df)
-
-    df['cluster_sociodemografico'] = labels_socio_km
-
-    # ── Codo + Silhouette ──
-    st.markdown("#### 🔍 Selección del K óptimo")
-
-    fig_codo_socio = make_subplots(rows=1, cols=2, subplot_titles=["Método del Codo", "Silhouette Score"])
-    fig_codo_socio.add_trace(
-        go.Scatter(x=K_socio, y=inertia_socio, mode='lines+markers',
-                   line=dict(color='#7c3aed', width=2),
-                   marker=dict(size=9, color='#7c3aed'), name='Inercia'),
-        row=1, col=1
-    )
-    fig_codo_socio.add_trace(
-        go.Scatter(x=K_socio, y=sil_socio, mode='lines+markers',
-                   line=dict(color='#059669', width=2),
-                   marker=dict(size=9, color='#059669', symbol='square'), name='Silhouette'),
-        row=1, col=2
-    )
-    fig_codo_socio.add_vline(x=3, line_dash="dash", line_color="#d97706",
-                              annotation_text="k=3 ← elegido", row=1, col=1)
-    fig_codo_socio.add_vline(x=3, line_dash="dash", line_color="#d97706", row=1, col=2)
-    fig_codo_socio.update_xaxes(title_text="Número de clusters (k)")
-    fig_codo_socio.update_yaxes(title_text="Inercia", row=1, col=1)
-    fig_codo_socio.update_yaxes(title_text="Silhouette Score", row=1, col=2)
-    fig_codo_socio.update_layout(
-        template='plotly_dark', height=400,
-        font=dict(family='Inter'), showlegend=False,
-        title_text='<b>Selección del número óptimo de clusters – K-Means Sociodemográfico</b>'
-    )
-    st.plotly_chart(fig_codo_socio, use_container_width=True)
-
-    with st.expander("📋 Resumen métricas por K"):
-        summary_socio_df = pd.DataFrame({
-            'k': K_socio,
-            'Inercia': [f"{v:,.0f}" for v in inertia_socio],
-            'Silhouette Score': [f"{v:.4f}" for v in sil_socio]
-        })
-        st.dataframe(summary_socio_df, use_container_width=True)
-
     st.markdown("---")
-    st.markdown("#### 📊 Resultado del Clustering Sociodemográfico (k = 3)")
+    
+    with open('metrics.json', 'r') as f:
+        metrics = json.load(f)
+
+    st.markdown("#### 🔍 Selección del K óptimo")
+    col_sk1, col_sk2 = st.columns(2)
+    with col_sk1:
+        fig_elbow_s = px.line(x=metrics['km_socio']['K'], y=metrics['km_socio']['inertia'], markers=True,
+                            title='<b>Elbow Method (Inertia)</b>',
+                            labels={'x':'Número de Clusters (k)', 'y':'Inertia'})
+        fig_elbow_s.update_layout(template='plotly_dark', height=350)
+        fig_elbow_s.add_vline(x=4, line_dash='dash', line_color='#ff4b4b', annotation_text='K=4 Seleccionado', annotation_position='top right')
+        st.plotly_chart(fig_elbow_s, use_container_width=True)
+    with col_sk2:
+        fig_silh_s = px.line(x=metrics['km_socio']['K'], y=metrics['km_socio']['silhouette'], markers=True,
+                           title='<b>Silhouette Score</b>',
+                           labels={'x':'Número de Clusters (k)', 'y':'Silhouette Score'})
+        fig_silh_s.update_layout(template='plotly_dark', height=350)
+        fig_silh_s.add_vline(x=4, line_dash='dash', line_color='#ff4b4b', annotation_text='K=4 Seleccionado', annotation_position='bottom right')
+        st.plotly_chart(fig_silh_s, use_container_width=True)
+    st.markdown("---")
+
+    st.markdown("#### 📊 Resultado del Clustering Sociodemográfico (k = 4)")
 
     col_s1, col_s2 = st.columns(2)
 
@@ -823,63 +647,55 @@ with tab_socio_kmeans:
         cluster_counts_socio = df['cluster_sociodemografico'].value_counts().sort_index()
         fig_pie_socio = px.pie(
             values=cluster_counts_socio.values,
-            names=[f"Cluster {i}" for i in cluster_counts_socio.index],
+            names=[f"Cluster {i}" if i != -1 else "Grupo 18" for i in cluster_counts_socio.index],
             title='<b>Distribución por cluster sociodemográfico</b>',
-            color_discrete_sequence=CLUSTER_COLORS_3, hole=0.42,
+            color_discrete_sequence=CLUSTER_COLORS_5, hole=0.42,
         )
         fig_pie_socio.update_traces(textposition='inside', textinfo='percent+label', textfont_size=13)
         fig_pie_socio.update_layout(template='plotly_dark', height=380, font=dict(family='Inter'))
         st.plotly_chart(fig_pie_socio, use_container_width=True)
-
     with col_s2:
-        # Scatter Age vs Monetary coloreado por cluster
-        df_s_plot = df.copy()
-        df_s_plot['Cluster'] = df_s_plot['cluster_sociodemografico'].astype(str).map(lambda x: f"Cluster {x}")
-        fig_age_mon = px.scatter(
-            df_s_plot, x='age', y='monetary',
-            color='Cluster', color_discrete_sequence=CLUSTER_COLORS_3,
-            title='<b>K-Means Sociodemográfico – Age vs Monetary</b>',
-            labels={'age': 'Edad', 'monetary': 'Gasto Total (USD)'},
-            opacity=0.55, height=380,
-        )
-        fig_age_mon.update_layout(template='plotly_dark', font=dict(family='Inter'))
-        st.plotly_chart(fig_age_mon, use_container_width=True)
+        st.markdown("**Clientes por cluster:**")
+        for cluster_raw, count in cluster_counts_socio.items():
+            pct = count / len(df) * 100
+            cluster=int(cluster_raw)
+            if cluster == -1:
+                color = '#d97706'  # Naranja
+                label_text = "Grupo 18"
+            elif cluster == 0:
+                color = '#64748b'  # Gris
+                label_text = "Cluster 0"
+            elif cluster == 1:
+                color = '#7c3aed'  # Morado
+                label_text = "Cluster 1"
+            elif cluster == 2:
+                color = '#059669'  # Verde
+                label_text = "Cluster 2"
+            elif cluster == 3:
+                color = '#2563eb'  # Azul
+                label_text = "Cluster 3"
+            else:
+                color = '#64748b'
+                label_text = f"Cluster {cluster}"
+                
+            st.markdown(f"""
+            <div style="display:flex; align-items:center; gap:12px; margin:8px 0;
+                        background:rgba(22,27,34,.8); border:1px solid #30363d;
+                        border-radius:10px; padding:12px 16px;">
+                <span class="cluster-badge" style="background:{color}20; color:{color}; border:1px solid {color}60;">
+                    {label_text}
+                </span>
+                <div style="flex:1;">
+                    <div style="background:#30363d; border-radius:6px; height:8px; overflow:hidden;">
+                        <div style="width:{pct:.1f}%; height:100%; background:{color}; border-radius:6px;"></div>
+                    </div>
+                </div>
+                <span style="color:#e6edf3; font-weight:700; min-width:60px;">{count:,} ({pct:.1f}%)</span>
+            </div>
+            """, unsafe_allow_html=True)    
 
-    # Perfil por cluster
-    st.markdown("#### 📋 Perfil Sociodemográfico por Cluster")
-    vars_socio = ['age', 'gender', 'acquisition_channel', 'membership_tier', 'monetary']
-    perfil_socio_km = df.groupby('cluster_sociodemografico')[vars_socio].mean().round(2)
-    perfil_socio_km.index = [f"Cluster {i}" for i in perfil_socio_km.index]
-    # Añadir columnas decodificadas
-    perfil_socio_km_display = perfil_socio_km.copy()
-    perfil_socio_km_display.columns = ['Edad Media', 'Género (cod.)', 'Adquisición (cod.)', 'Membresía (cod.)', 'Monetary (USD)']
-    st.dataframe(
-        perfil_socio_km_display.style.format("{:.2f}")
-        .background_gradient(subset=['Monetary (USD)'], cmap='Greens'),
-        use_container_width=True
-    )
 
-    # Gráfico de barras por variable
-    st.markdown("#### 📊 Comparativa de Medias por Variable y Cluster")
-    vars_to_plot = ['age', 'membership_tier', 'monetary']
-    var_labels = {'age': 'Edad', 'membership_tier': 'Membresía (código)', 'monetary': 'Gasto (USD)'}
 
-    fig_bar_socio = make_subplots(rows=1, cols=3, subplot_titles=[var_labels[v] for v in vars_to_plot])
-    for j, var in enumerate(vars_to_plot):
-        group_vals = df.groupby('cluster_sociodemografico')[var].mean()
-        for i, (cluster_id, val) in enumerate(group_vals.items()):
-            fig_bar_socio.add_trace(
-                go.Bar(
-                    x=[f"C{cluster_id}"], y=[val],
-                    marker_color=CLUSTER_COLORS_3[i],
-                    showlegend=(j == 0),
-                    name=f"Cluster {cluster_id}",
-                ),
-                row=1, col=j+1
-            )
-    fig_bar_socio.update_layout(template='plotly_dark', height=380, font=dict(family='Inter'),
-                                 barmode='group', title_text='<b>Medias por cluster – K-Means Sociodemográfico</b>')
-    st.plotly_chart(fig_bar_socio, use_container_width=True)
 
 
 # ════════════════════════════════════════════
@@ -899,53 +715,31 @@ with tab_lca_rfm:
         </div>
         """, unsafe_allow_html=True)
 
-        with st.spinner("Ejecutando LCA RFM (puede tardar unos segundos)…"):
-            labels_lca_rfm, K_lca_rfm, bic_lca_rfm, entropy_lca_rfm, lca_ok = run_lca_rfm(df)
-
-        if not lca_ok or labels_lca_rfm is None:
-            st.error("⚠️ No se pudo ejecutar StepMix. Asegúrate de que `stepmix` esté instalado:\n```\npip install stepmix\n```")
-        else:
-            df['lca_cluster_rfm'] = labels_lca_rfm
-
-            # ── BIC + Entropía ──
-            st.markdown("#### 🔍 Selección del K óptimo – BIC y Entropía")
-
-            fig_bic_rfm = make_subplots(rows=1, cols=2, subplot_titles=["BIC vs. número de clases", "Entropía Relativa vs. número de clases"])
-            fig_bic_rfm.add_trace(
-                go.Scatter(x=K_lca_rfm, y=bic_lca_rfm, mode='lines+markers',
-                           line=dict(color='#7c3aed', width=2),
-                           marker=dict(size=9, color='#7c3aed'), name='BIC'),
-                row=1, col=1
-            )
-            fig_bic_rfm.add_trace(
-                go.Scatter(x=K_lca_rfm, y=entropy_lca_rfm, mode='lines+markers',
-                           line=dict(color='#d97706', width=2),
-                           marker=dict(size=9, color='#d97706', symbol='diamond'), name='Entropía'),
-                row=1, col=2
-            )
-            fig_bic_rfm.add_vline(x=4, line_dash="dash", line_color="#059669",
-                                   annotation_text="k=4 ← elegido", row=1, col=1)
-            fig_bic_rfm.add_vline(x=4, line_dash="dash", line_color="#059669", row=1, col=2)
-            fig_bic_rfm.update_xaxes(title_text="Clases latentes (k)")
-            fig_bic_rfm.update_yaxes(title_text="BIC", row=1, col=1)
-            fig_bic_rfm.update_yaxes(title_text="Entropía Relativa", row=1, col=2)
-            fig_bic_rfm.update_layout(
-                template='plotly_dark', height=400,
-                font=dict(family='Inter'), showlegend=False,
-                title_text='<b>Selección del número óptimo de clases – LCA RFM</b>'
-            )
-            st.plotly_chart(fig_bic_rfm, use_container_width=True)
-
-            # Tabla BIC
-            with st.expander("📋 Tabla BIC y Entropía por K"):
-                bic_table = pd.DataFrame({
-                    'k': K_lca_rfm,
-                    'BIC': [f"{v:,.2f}" for v in bic_lca_rfm],
-                    'Entropía Relativa': [f"{v:.4f}" for v in entropy_lca_rfm]
-                })
-                st.dataframe(bic_table, use_container_width=True)
-
+        if True:
             st.markdown("---")
+
+        with open('metrics.json', 'r') as f:
+            metrics = json.load(f)
+
+        st.markdown("#### 🔍 Selección del K óptimo – BIC y Entropía")
+        col_lca_bic1, col_lca_bic2 = st.columns(2)
+        with col_lca_bic1:
+            fig_bic = px.line(x=metrics['lca_rfm']['K'], y=metrics['lca_rfm']['bic'], markers=True,
+                                title='<b>BIC vs. número de clases</b>',
+                                labels={'x':'Clases latentes (k)', 'y':'BIC'})
+            fig_bic.update_layout(template='plotly_dark', height=350)
+            fig_bic.add_vline(x=4, line_dash='dash', line_color='#ff4b4b', annotation_text='K=4 Seleccionado', annotation_position='top right')
+            st.plotly_chart(fig_bic, use_container_width=True)
+        with col_lca_bic2:
+            fig_ent = px.line(x=metrics['lca_rfm']['K'], y=metrics['lca_rfm']['entropy'], markers=True,
+                               title='<b>Entropía relativa vs. número de clases</b>',
+                               labels={'x':'Clases latentes (k)', 'y':'Entropía Relativa'})
+            fig_ent.update_layout(template='plotly_dark', height=350)
+            fig_ent.update_yaxes(range=[0, 1.05])
+            fig_ent.add_vline(x=4, line_dash='dash', line_color='#ff4b4b', annotation_text='K=4 Seleccionado', annotation_position='bottom right')
+            st.plotly_chart(fig_ent, use_container_width=True)
+        st.markdown("---")
+        if True:
             st.markdown("#### 📊 Resultado del Clustering LCA (k = 4)")
 
             col_lca1, col_lca2 = st.columns(2)
@@ -961,35 +755,44 @@ with tab_lca_rfm:
                 fig_pie_lca_rfm.update_traces(textposition='inside', textinfo='percent+label', textfont_size=13)
                 fig_pie_lca_rfm.update_layout(template='plotly_dark', height=380, font=dict(family='Inter'))
                 st.plotly_chart(fig_pie_lca_rfm, use_container_width=True)
-
             with col_lca2:
-                # 3D scatter LCA RFM
-                df_lca_3d = df.copy()
-                df_lca_3d['Clase'] = df_lca_3d['lca_cluster_rfm'].astype(str).map(lambda x: f"Clase {x}")
-                fig_3d_lca_rfm = px.scatter_3d(
-                    df_lca_3d, x='recency', y='frequency', z='monetary',
-                    color='Clase', color_discrete_sequence=CLUSTER_COLORS_4,
-                    title='<b>LCA RFM – Visualización 3D (k=4)</b>',
-                    labels={'recency': 'Recency', 'frequency': 'Frequency', 'monetary': 'Monetary'},
-                    opacity=0.65, height=380,
-                )
-                fig_3d_lca_rfm.update_traces(marker=dict(size=3))
-                fig_3d_lca_rfm.update_layout(template='plotly_dark', font=dict(family='Inter'),
-                                              margin=dict(l=0, r=0, b=0, t=50))
-                st.plotly_chart(fig_3d_lca_rfm, use_container_width=True)
+                st.markdown("**Clientes por cluster:**")
+                for cluster_raw, count in cluster_counts_lca_rfm.items():
+                    pct = count / len(df) * 100
+                    cluster=int(cluster_raw)
+                    if cluster == 0:
+                        color = '#7c3aed'  # Morado
+                        label_text = "Cluster 0"
+                    elif cluster == 1:
+                        color = '#059669'  # Verde
+                        label_text = "Cluster 1"
+                    elif cluster == 2:
+                        color = '#d97706'  # Naranja
+                        label_text = "Cluster 2"
+                    elif cluster == 3:
+                        color = '#2563eb'  # Azul
+                        label_text = "Cluster 3"
+                    else:
+                        color = '#d97706'
+                        label_text = f"Cluster {cluster}"
+                    
+                    st.markdown(f"""<div style="display:flex; align-items:center; gap:12px; margin:8px 0;
+                        background:rgba(22,27,34,.8); border:1px solid #30363d;
+                        border-radius:10px; padding:12px 16px;">
+                <span class="cluster-badge" style="background:{color}20; color:{color}; border:1px solid {color}60;">
+                    {label_text}
+                </span>
+                <div style="flex:1;">
+                    <div style="background:#30363d; border-radius:6px; height:8px; overflow:hidden;">
+                        <div style="width:{pct:.1f}%; height:100%; background:{color}; border-radius:6px;"></div>
+                    </div>
+                </div>
+                <span style="color:#e6edf3; font-weight:700; min-width:60px;">{count:,} ({pct:.1f}%)</span>
+            </div>
+            """, unsafe_allow_html=True)    
+                
 
-            # Perfil LCA RFM
-            st.markdown("#### 📋 Perfil Medio por Clase (LCA RFM)")
-            perfil_lca_rfm = df.groupby('lca_cluster_rfm')[['recency', 'frequency', 'monetary']].mean().round(2)
-            perfil_lca_rfm.index = [f"Clase {i}" for i in perfil_lca_rfm.index]
-            perfil_lca_rfm.columns = ['Recency (días)', 'Frequency (órdenes)', 'Monetary (USD)']
-            st.dataframe(
-                perfil_lca_rfm.style.format("{:.2f}")
-                .background_gradient(subset=['Recency (días)'], cmap='RdYlGn_r')
-                .background_gradient(subset=['Frequency (órdenes)'], cmap='Blues')
-                .background_gradient(subset=['Monetary (USD)'], cmap='Greens'),
-                use_container_width=True
-            )
+
 
 
 # ════════════════════════════════════════════
@@ -1003,58 +806,37 @@ with tab_lca_socio:
     else:
         st.markdown("""
         <div class="info-box">
-        <strong>Variables:</strong> gender (cat.), acquisition_channel (cat.), membership_tier (cat.), age (gaussiana)<br>
+        <strong>Variables:</strong> gender (cat.), acquisition_channel (cat.), membership_tier (cat.), preferred_payment_method (cat.), age (gaussiana)<br>
         <strong>Herramienta:</strong> StepMix (modelo mixto)<br>
         <strong>Selección de K:</strong> BIC + Entropía Relativa → <strong>k = 3</strong>
         </div>
         """, unsafe_allow_html=True)
 
-        with st.spinner("Ejecutando LCA Sociodemográfico (puede tardar unos segundos)…"):
-            labels_lca_socio, K_lca_socio, bic_lca_socio, entropy_lca_socio, lca_socio_ok = run_lca_socio(df)
-
-        if not lca_socio_ok or labels_lca_socio is None:
-            st.error("⚠️ No se pudo ejecutar StepMix. Asegúrate de que `stepmix` esté instalado.")
-        else:
-            df['cluster_sociodemografico_lca'] = labels_lca_socio
-
-            # ── BIC + Entropía ──
-            st.markdown("#### 🔍 Selección del K óptimo – BIC y Entropía")
-
-            fig_bic_socio = make_subplots(rows=1, cols=2, subplot_titles=["BIC vs. número de clases", "Entropía Relativa vs. número de clases"])
-            fig_bic_socio.add_trace(
-                go.Scatter(x=K_lca_socio, y=bic_lca_socio, mode='lines+markers',
-                           line=dict(color='#059669', width=2),
-                           marker=dict(size=9, color='#059669'), name='BIC'),
-                row=1, col=1
-            )
-            fig_bic_socio.add_trace(
-                go.Scatter(x=K_lca_socio, y=entropy_lca_socio, mode='lines+markers',
-                           line=dict(color='#d97706', width=2),
-                           marker=dict(size=9, color='#d97706', symbol='diamond'), name='Entropía'),
-                row=1, col=2
-            )
-            fig_bic_socio.add_vline(x=3, line_dash="dash", line_color="#7c3aed",
-                                     annotation_text="k=3 ← elegido", row=1, col=1)
-            fig_bic_socio.add_vline(x=3, line_dash="dash", line_color="#7c3aed", row=1, col=2)
-            fig_bic_socio.update_xaxes(title_text="Clases latentes (k)")
-            fig_bic_socio.update_yaxes(title_text="BIC", row=1, col=1)
-            fig_bic_socio.update_yaxes(title_text="Entropía Relativa", row=1, col=2)
-            fig_bic_socio.update_layout(
-                template='plotly_dark', height=400,
-                font=dict(family='Inter'), showlegend=False,
-                title_text='<b>Selección del número óptimo de clases – LCA Sociodemográfico</b>'
-            )
-            st.plotly_chart(fig_bic_socio, use_container_width=True)
-
-            with st.expander("📋 Tabla BIC y Entropía por K"):
-                bic_socio_table = pd.DataFrame({
-                    'k': K_lca_socio,
-                    'BIC': [f"{v:,.2f}" for v in bic_lca_socio],
-                    'Entropía Relativa': [f"{v:.4f}" for v in entropy_lca_socio]
-                })
-                st.dataframe(bic_socio_table, use_container_width=True)
-
+        if True:
             st.markdown("---")
+
+        with open('metrics.json', 'r') as f:
+            metrics = json.load(f)
+
+        st.markdown("#### 🔍 Selección del K óptimo – BIC y Entropía")
+        col_s_lca_bic1, col_s_lca_bic2 = st.columns(2)
+        with col_s_lca_bic1:
+            fig_bic_s = px.line(x=metrics['lca_socio']['K'], y=metrics['lca_socio']['bic'], markers=True,
+                                title='<b>BIC vs. número de clases</b>',
+                                labels={'x':'Clases latentes (k)', 'y':'BIC'})
+            fig_bic_s.update_layout(template='plotly_dark', height=350)
+            fig_bic_s.add_vline(x=3, line_dash='dash', line_color='#ff4b4b', annotation_text='K=3 Seleccionado', annotation_position='top right')
+            st.plotly_chart(fig_bic_s, use_container_width=True)
+        with col_s_lca_bic2:
+            fig_ent_s = px.line(x=metrics['lca_socio']['K'], y=metrics['lca_socio']['entropy'], markers=True,
+                               title='<b>Entropía relativa vs. número de clases</b>',
+                               labels={'x':'Clases latentes (k)', 'y':'Entropía Relativa'})
+            fig_ent_s.update_layout(template='plotly_dark', height=350)
+            fig_ent_s.update_yaxes(range=[0, 1.05])
+            fig_ent_s.add_vline(x=3, line_dash='dash', line_color='#ff4b4b', annotation_text='K=3 Seleccionado', annotation_position='bottom right')
+            st.plotly_chart(fig_ent_s, use_container_width=True)
+        st.markdown("---")
+        if True:
             st.markdown("#### 📊 Resultado del Clustering LCA Socio (k = 3)")
 
             col_s_lca1, col_s_lca2 = st.columns(2)
@@ -1064,9 +846,9 @@ with tab_lca_socio:
                 counts_lca_socio = df['cluster_sociodemografico_lca'].value_counts().sort_index()
                 fig_pie_lca_socio = px.pie(
                     values=counts_lca_socio.values,
-                    names=[f"Clase {i}" for i in counts_lca_socio.index],
+                    names=[f"Clase {i}" if i != -1 else "Grupo 18" for i in counts_lca_socio.index],
                     title='<b>Distribución por clase LCA Sociodemográfico</b>',
-                    color_discrete_sequence=CLUSTER_COLORS_3, hole=0.42,
+                    color_discrete_sequence=CLUSTER_COLORS_LCA4, hole=0.42,
                 )
                 fig_pie_lca_socio.update_traces(textposition='inside', textinfo='percent+label', textfont_size=13)
                 fig_pie_lca_socio.update_layout(template='plotly_dark', height=380, font=dict(family='Inter'))
@@ -1075,41 +857,19 @@ with tab_lca_socio:
             with col_s_lca2:
                 # Scatter Age vs Monetary coloreado por LCA socio
                 df_lca_s_plot = df.copy()
-                df_lca_s_plot['Clase'] = df_lca_s_plot['cluster_sociodemografico_lca'].astype(str).map(lambda x: f"Clase {x}")
+                df_lca_s_plot['Clase'] = df_lca_s_plot['cluster_sociodemografico_lca'].astype(str).map(
+                    lambda x: "Grupo 18" if x == "-1" else f"Clase {x}"
+                )
+                df_lca_s_plot = df_lca_s_plot.sort_values('cluster_sociodemografico_lca')
                 fig_lca_age_mon = px.scatter(
                     df_lca_s_plot, x='age', y='monetary',
-                    color='Clase', color_discrete_sequence=CLUSTER_COLORS_3,
+                    color='Clase', color_discrete_sequence=CLUSTER_COLORS_LCA4,
                     title='<b>LCA Sociodemográfico – Age vs Monetary</b>',
                     labels={'age': 'Edad', 'monetary': 'Gasto Total (USD)'},
                     opacity=0.55, height=380,
                 )
                 fig_lca_age_mon.update_layout(template='plotly_dark', font=dict(family='Inter'))
                 st.plotly_chart(fig_lca_age_mon, use_container_width=True)
-
-            # Perfil sociodemográfico LCA (con la moda, como en el notebook)
-            st.markdown("#### 📋 Perfil Sociodemográfico por Clase LCA (moda)")
-            variables_sociodemograficas = ['age', 'acquisition_channel', 'membership_tier', 'gender']
-            perfil_lca_socio_moda = df.groupby('cluster_sociodemografico_lca')[variables_sociodemograficas].agg(lambda x: x.mode()[0]).round(2)
-            perfil_lca_socio_moda.index = [f"Clase {i}" for i in perfil_lca_socio_moda.index]
-
-            # Decodificar
-            perfil_display = pd.DataFrame(index=perfil_lca_socio_moda.index)
-            perfil_display['Edad (moda)'] = perfil_lca_socio_moda['age']
-            perfil_display['Género'] = perfil_lca_socio_moda['gender'].map(GENDER_INV).fillna(perfil_lca_socio_moda['gender'])
-            perfil_display['Canal Adquisición'] = perfil_lca_socio_moda['acquisition_channel'].map(ACQUISITION_INV).fillna(perfil_lca_socio_moda['acquisition_channel'])
-            perfil_display['Membresía'] = perfil_lca_socio_moda['membership_tier'].map(MEMBERSHIP_INV).fillna(perfil_lca_socio_moda['membership_tier'])
-
-            st.dataframe(perfil_display, use_container_width=True)
-
-            # Notas del notebook
-            st.markdown("""
-            <div class="info-box">
-            <strong>Interpretación de las clases (del notebook):</strong><br>
-            - <strong>Clase 0:</strong> Mujer ~34 años, búsqueda orgánica, membresía Free<br>
-            - <strong>Clase 1:</strong> Hombre ~18 años, búsqueda orgánica, membresía Free<br>
-            - <strong>Clase 2:</strong> Mujer ~44 años, búsqueda orgánica, membresía Free
-            </div>
-            """, unsafe_allow_html=True)
 
             # Crosstabs de distribuciones
             st.markdown("#### 📊 Distribuciones Porcentuales por Clase")
@@ -1120,7 +880,7 @@ with tab_lca_socio:
                 tabla_pct_memb = pd.crosstab(df['cluster_sociodemografico_lca'],
                                               df['membership_tier'],
                                               normalize='index') * 100
-                tabla_pct_memb.index = [f"Clase {i}" for i in tabla_pct_memb.index]
+                tabla_pct_memb.index = [f"Clase {i}" if i != -1 else "Grupo 18" for i in tabla_pct_memb.index]
                 tabla_pct_memb.columns = [MEMBERSHIP_INV.get(c, str(c)) for c in tabla_pct_memb.columns]
                 st.dataframe(tabla_pct_memb.style.format("{:.1f}%")
                              .background_gradient(cmap='Blues'), use_container_width=True)
@@ -1140,7 +900,7 @@ with tab_lca_socio:
                 tabla_pct_acq = pd.crosstab(df['cluster_sociodemografico_lca'],
                                              df['acquisition_channel'],
                                              normalize='index') * 100
-                tabla_pct_acq.index = [f"Clase {i}" for i in tabla_pct_acq.index]
+                tabla_pct_acq.index = [f"Clase {i}" if i != -1 else "Grupo 18" for i in tabla_pct_acq.index]
                 tabla_pct_acq.columns = [ACQUISITION_INV.get(c, str(c)) for c in tabla_pct_acq.columns]
                 st.dataframe(tabla_pct_acq.style.format("{:.1f}%")
                              .background_gradient(cmap='Purples'), use_container_width=True)
@@ -1156,8 +916,151 @@ with tab_lca_socio:
                 st.plotly_chart(fig_acq_bar, use_container_width=True)
 
 
+
 # ════════════════════════════════════════════
-# TAB 6: PERFILES DE CLUSTERS
+# TAB 6: COMPARACIÓN RFM
+# ════════════════════════════════════════════
+with tab_comp_rfm:
+    st.markdown('<div class="section-title">Comparación de Modelos: K-Means vs LCA (RFM)</div>', unsafe_allow_html=True)
+    
+    if 'lca_cluster_rfm' not in df.columns:
+        st.warning("⚠️ Debes activar y calcular el modelo LCA en el sidebar para ver las comparaciones.")
+    else:
+        st.markdown("### 📊 Gráficos de Dispersión 2D (Recency vs Monetary)")
+        col_2d_r1, col_2d_r2 = st.columns(2)
+        
+        with col_2d_r1:
+            df_r_plot1 = df.copy()
+            df_r_plot1['Cluster'] = df_r_plot1['cluster_rfmkmeans'].astype(str).map(lambda x: f"KM-{x}")
+            import plotly.express as px
+            fig_2d_km_rfm = px.scatter(
+                df_r_plot1, x='recency', y='monetary',
+                color='Cluster', color_discrete_sequence=CLUSTER_COLORS_4,
+                title='<b>K-Means RFM (k=4)</b>',
+                labels={'recency': 'Recency', 'monetary': 'Monetary'},
+                opacity=0.55, height=380,
+            )
+            fig_2d_km_rfm.update_layout(template='plotly_dark', font=dict(family='Inter'))
+            st.plotly_chart(fig_2d_km_rfm, use_container_width=True)
+            
+        with col_2d_r2:
+            df_r_plot2 = df.copy()
+            df_r_plot2['Clase'] = df_r_plot2['lca_cluster_rfm'].astype(str).map(lambda x: f"LCA-{x}")
+            fig_2d_lca_rfm = px.scatter(
+                df_r_plot2, x='recency', y='monetary',
+                color='Clase', color_discrete_sequence=CLUSTER_COLORS_4,
+                title='<b>LCA RFM (k=4)</b>',
+                labels={'recency': 'Recency', 'monetary': 'Monetary'},
+                opacity=0.55, height=380,
+            )
+            fig_2d_lca_rfm.update_layout(template='plotly_dark', font=dict(family='Inter'))
+            st.plotly_chart(fig_2d_lca_rfm, use_container_width=True)
+            
+        st.markdown("---")
+        st.markdown("### 🌐 Gráficos de Dispersión 3D")
+        col_3d_r1, col_3d_r2 = st.columns(2)
+        
+        with col_3d_r1:
+            fig_3d_rfm = px.scatter_3d(
+                df_r_plot1, x='recency', y='frequency', z='monetary',
+                color='Cluster', color_discrete_sequence=CLUSTER_COLORS_4,
+                title='<b>K-Means RFM (k=4)</b>',
+                labels={'recency': 'Recency', 'frequency': 'Frequency', 'monetary': 'Monetary'},
+                opacity=0.65, height=450,
+            )
+            fig_3d_rfm.update_traces(marker=dict(size=3.5))
+            fig_3d_rfm.update_layout(template='plotly_dark', font=dict(family='Inter'), margin=dict(l=0, r=0, b=0, t=50))
+            st.plotly_chart(fig_3d_rfm, use_container_width=True)
+            
+        with col_3d_r2:
+            fig_3d_lca_rfm = px.scatter_3d(
+                df_r_plot2, x='recency', y='frequency', z='monetary',
+                color='Clase', color_discrete_sequence=CLUSTER_COLORS_4,
+                title='<b>LCA RFM (k=4)</b>',
+                labels={'recency': 'Recency', 'frequency': 'Frequency', 'monetary': 'Monetary'},
+                opacity=0.65, height=450,
+            )
+            fig_3d_lca_rfm.update_traces(marker=dict(size=3.5))
+            fig_3d_lca_rfm.update_layout(template='plotly_dark', font=dict(family='Inter'), margin=dict(l=0, r=0, b=0, t=50))
+            st.plotly_chart(fig_3d_lca_rfm, use_container_width=True)
+
+
+# ════════════════════════════════════════════
+# TAB 7: COMPARACIÓN SOCIODEMOGRÁFICA
+# ════════════════════════════════════════════
+with tab_comp_socio:
+    st.markdown('<div class="section-title">Comparación de Modelos: K-Means vs LCA (Sociodemográfico)</div>', unsafe_allow_html=True)
+    
+    if 'cluster_sociodemografico_lca' not in df.columns:
+        st.warning("⚠️ Debes activar y calcular el modelo LCA en el sidebar para ver las comparaciones.")
+    else:
+        st.markdown("### 📊 Gráficos de Dispersión 2D (Age vs Monetary)")
+        col_2d_s1, col_2d_s2 = st.columns(2)
+        
+        with col_2d_s1:
+            df_s_plot1 = df.copy()
+            df_s_plot1['Cluster'] = df_s_plot1['cluster_sociodemografico'].astype(str).map(
+                lambda x: "Grupo 18" if x == "-1" else f"KM-{x}"
+            )
+            df_s_plot1 = df_s_plot1.sort_values('cluster_sociodemografico')
+            fig_2d_km_socio = px.scatter(
+                df_s_plot1, x='age', y='monetary',
+                color='Cluster', color_discrete_sequence=CLUSTER_COLORS_5,
+                title='<b>K-Means Sociodemográfico (k=4)</b>',
+                labels={'age': 'Edad', 'monetary': 'Monetary'},
+                opacity=0.55, height=380,
+            )
+            fig_2d_km_socio.update_layout(template='plotly_dark', font=dict(family='Inter'))
+            st.plotly_chart(fig_2d_km_socio, use_container_width=True)
+            
+        with col_2d_s2:
+            df_s_plot2 = df.copy()
+            df_s_plot2['Clase'] = df_s_plot2['cluster_sociodemografico_lca'].astype(str).map(
+                lambda x: "Grupo 18" if x == "-1" else f"LCA-{x}"
+            )
+            df_s_plot2 = df_s_plot2.sort_values('cluster_sociodemografico_lca')
+            fig_2d_lca_socio = px.scatter(
+                df_s_plot2, x='age', y='monetary',
+                color='Clase', color_discrete_sequence=CLUSTER_COLORS_LCA4,
+                title='<b>LCA Sociodemográfico (k=3)</b>',
+                labels={'age': 'Edad', 'monetary': 'Monetary'},
+                opacity=0.55, height=380,
+            )
+            fig_2d_lca_socio.update_layout(template='plotly_dark', font=dict(family='Inter'))
+            st.plotly_chart(fig_2d_lca_socio, use_container_width=True)
+            
+        st.markdown("---")
+        st.markdown("### 🌐 Gráficos de Dispersión 3D (Age vs Frequency vs Monetary)")
+        col_3d_s1, col_3d_s2 = st.columns(2)
+        
+        with col_3d_s1:
+            fig_3d_km_socio = px.scatter_3d(
+                df_s_plot1, x='age', y='frequency', z='monetary',
+                color='Cluster', color_discrete_sequence=CLUSTER_COLORS_5,
+                title='<b>K-Means Sociodemográfico (k=4)</b>',
+                labels={'age': 'Edad', 'frequency': 'Frecuencia', 'monetary': 'Gasto (USD)'},
+                opacity=0.65, height=450,
+            )
+            fig_3d_km_socio.update_traces(marker=dict(size=3.5))
+            fig_3d_km_socio.update_layout(template='plotly_dark', font=dict(family='Inter'), margin=dict(l=0, r=0, b=0, t=50))
+            st.plotly_chart(fig_3d_km_socio, use_container_width=True)
+            
+        with col_3d_s2:
+            fig_3d_lca_socio_comp = px.scatter_3d(
+                df_s_plot2, x='age', y='frequency', z='monetary',
+                color='Clase', color_discrete_sequence=CLUSTER_COLORS_LCA4,
+                title='<b>LCA Sociodemográfico (k=3)</b>',
+                labels={'age': 'Edad', 'frequency': 'Frecuencia', 'monetary': 'Gasto (USD)'},
+                opacity=0.65, height=450,
+            )
+            fig_3d_lca_socio_comp.update_traces(marker=dict(size=3.5))
+            fig_3d_lca_socio_comp.update_layout(template='plotly_dark', font=dict(family='Inter'), margin=dict(l=0, r=0, b=0, t=50))
+            st.plotly_chart(fig_3d_lca_socio_comp, use_container_width=True)
+
+
+
+# ════════════════════════════════════════════
+# TAB 8: PERFILES DE CLUSTERS
 # ════════════════════════════════════════════
 with tab_perfiles:
     st.markdown('<div class="section-title">Perfiles Comparativos de Clusters</div>', unsafe_allow_html=True)
@@ -1191,32 +1094,6 @@ with tab_perfiles:
         .background_gradient(subset=['Frequency'], cmap='Blues'),
         use_container_width=True
     )
-
-    # Radar chart K-Means RFM
-    radar_cols_rfm = ['recency', 'frequency', 'monetary', 'wishlist_items', 'returns_made']
-    radar_data_rfm = df.groupby('cluster_rfmkmeans')[radar_cols_rfm].mean()
-    radar_norm_rfm = (radar_data_rfm - radar_data_rfm.min()) / (radar_data_rfm.max() - radar_data_rfm.min() + 1e-9)
-
-    fig_radar_rfm = go.Figure()
-    for idx in radar_norm_rfm.index:
-        vals = radar_norm_rfm.loc[idx].tolist()
-        vals.append(vals[0])
-        fig_radar_rfm.add_trace(go.Scatterpolar(
-            r=vals,
-            theta=radar_cols_rfm + [radar_cols_rfm[0]],
-            fill='toself',
-            name=f"Cluster {idx}",
-            opacity=0.65,
-        ))
-    fig_radar_rfm.update_layout(
-        title='<b>Perfil Normalizado – K-Means RFM</b>',
-        polar=dict(radialaxis=dict(visible=True, range=[0, 1])),
-        template='plotly_dark', height=420,
-        font=dict(family='Inter'),
-        legend=dict(orientation='h', y=-0.12),
-    )
-    st.plotly_chart(fig_radar_rfm, use_container_width=True)
-
     if has_lca_rfm:
         st.markdown("---")
         st.markdown("#### 🔶 Perfil LCA RFM (k=4)")
@@ -1243,37 +1120,45 @@ with tab_perfiles:
             use_container_width=True
         )
 
-    if has_lca_rfm and has_lca_socio:
+    # ── Perfil K-Means Sociodemográfico ──
+    if 'cluster_sociodemografico' in df.columns:
         st.markdown("---")
-        st.markdown("#### 📊 Matriz de Comparación K-Means RFM vs LCA RFM")
-        tabla_comp_rfm = pd.crosstab(
-            df['cluster_rfmkmeans'],
-            df['lca_cluster_rfm'],
-            margins=True
-        )
-        tabla_comp_rfm.index = [f"KM-{i}" if i != 'All' else 'Total' for i in tabla_comp_rfm.index]
-        tabla_comp_rfm.columns = [f"LCA-{i}" if i != 'All' else 'Total' for i in tabla_comp_rfm.columns]
-        _rows_rfm = [r for r in tabla_comp_rfm.index if r != 'Total']
-        _cols_rfm = [c for c in tabla_comp_rfm.columns if c != 'Total']
-        st.dataframe(tabla_comp_rfm.style.background_gradient(cmap='Blues', subset=pd.IndexSlice[_rows_rfm, _cols_rfm]),
-                     use_container_width=True)
+        st.markdown("#### 🟣 Perfil K-Means Sociodemográfico (Mean ± Std & Moda)")
+        vars_socio = ['age', 'gender', 'acquisition_channel', 'membership_tier', 'preferred_payment_method']
+        
+        km_socio_mean = df.groupby('cluster_sociodemografico')[vars_socio].mean().round(2)
+        km_socio_std = df.groupby('cluster_sociodemografico')[vars_socio].std().round(2).fillna(0)
+        km_socio_moda = df.groupby('cluster_sociodemografico')[vars_socio].agg(lambda x: x.mode()[0])
+        
+        km_socio_disp = pd.DataFrame(index=km_socio_mean.index)
+        for c in vars_socio:
+            km_socio_disp[f"{c} (Mean±Std)"] = km_socio_mean[c].astype(str) + " ± " + km_socio_std[c].astype(str)
+            km_socio_disp[f"{c} (Moda)"] = km_socio_moda[c]
+            
+        km_socio_disp.index = [f"Cluster {i}" if i != -1 else "Grupo 18" for i in km_socio_disp.index]
+        st.dataframe(km_socio_disp, use_container_width=True)
 
-        st.markdown("#### 📊 Matriz de Comparación K-Means Socio vs LCA Socio")
-        tabla_comp_socio = pd.crosstab(
-            df['cluster_sociodemografico_lca'],
-            df['cluster_sociodemografico'],
-            margins=True
-        )
-        tabla_comp_socio.index = [f"LCA-{i}" if i != 'All' else 'Total' for i in tabla_comp_socio.index]
-        tabla_comp_socio.columns = [f"KM-{i}" if i != 'All' else 'Total' for i in tabla_comp_socio.columns]
-        _rows_socio = [r for r in tabla_comp_socio.index if r != 'Total']
-        _cols_socio = [c for c in tabla_comp_socio.columns if c != 'Total']
-        st.dataframe(tabla_comp_socio.style.background_gradient(cmap='Purples', subset=pd.IndexSlice[_rows_socio, _cols_socio]),
-                     use_container_width=True)
+    # ── Perfil LCA Sociodemográfico ──
+    if has_lca_socio:
+        st.markdown("---")
+        st.markdown("#### 🟢 Perfil LCA Sociodemográfico (Mean ± Std & Moda)")
+        vars_socio = ['age', 'gender', 'acquisition_channel', 'membership_tier', 'preferred_payment_method']
+        
+        lca_socio_mean = df.groupby('cluster_sociodemografico_lca')[vars_socio].mean().round(2)
+        lca_socio_std = df.groupby('cluster_sociodemografico_lca')[vars_socio].std().round(2).fillna(0)
+        lca_socio_moda = df.groupby('cluster_sociodemografico_lca')[vars_socio].agg(lambda x: x.mode()[0])
+        
+        lca_socio_disp = pd.DataFrame(index=lca_socio_mean.index)
+        for c in vars_socio:
+            lca_socio_disp[f"{c} (Mean±Std)"] = lca_socio_mean[c].astype(str) + " ± " + lca_socio_std[c].astype(str)
+            lca_socio_disp[f"{c} (Moda)"] = lca_socio_moda[c]
+            
+        lca_socio_disp.index = [f"Clase {i}" if i != -1 else "Grupo 18" for i in lca_socio_disp.index]
+        st.dataframe(lca_socio_disp, use_container_width=True)
 
 
 # ════════════════════════════════════════════
-# TAB 7: CRUCE DE SEGMENTOS
+# TAB 9: CRUCE DE SEGMENTOS
 # ════════════════════════════════════════════
 with tab_cruce:
     st.markdown('<div class="section-title">Cruce de Segmentos: RFM × Sociodemográfico</div>', unsafe_allow_html=True)
@@ -1291,7 +1176,7 @@ with tab_cruce:
             columns='cluster_sociodemografico', aggfunc='count', fill_value=0
         )
         pivot_km.index = [f"RFM-Cluster {i}" for i in pivot_km.index]
-        pivot_km.columns = [f"Socio-Cluster {i}" for i in pivot_km.columns]
+        pivot_km.columns = [f"Socio-Cluster {i}" if i != -1 else "Socio-Grupo 18" for i in pivot_km.columns]
 
         fig_heat_km = px.imshow(
             pivot_km.values,
@@ -1316,18 +1201,20 @@ with tab_cruce:
             aggfunc='count', fill_value=0
         )
 
-        # Labels descriptivos del notebook
+        # Labels descriptivos
         rfm_labels = {
-            0: "RFM-0 | Grupo entrada\n(≈ $629 USD)",
-            1: "RFM-1 | Alto valor frecuente\n(≈ $6900 USD)",
-            2: "RFM-2 | Máximo valor y fidelidad\n(≈ $18264 USD)",
-            3: "RFM-3 | Valor medio\n(≈ $2786 USD)"
+            0: "RFM-0 |  Cliente Ocasional (Promedio segmento ≈ $629 USD)",
+            1: "RFM-1 |  Cliente Recurrente inactivo con presupuesto medio \n(Promedio Segmento ≈ $2786 USD)",
+            2: "RFM-2 |  Cliente Frecuente con alto presupuesto\n(Promedio segmento≈ $6900 USD)",
+            3: "RFM-3 |  Cliente Premium frecuente\n(Promedio Segmento ≈ $18264 USD)",
         }
         dem_labels = {
-            0: "Demo-0\nMujer ~34a\nOrganic Search\nFree",
-            1: "Demo-1\nHombre ~18a\nOrganic Search\nFree",
-            2: "Demo-2\nMujer ~44a\nOrganic Search\nFree"
+            -1: "Demo - (-1)\nHombre de\n18 años\nbúsqueda orgánica\nmembresía gratis\nY paga con TC",
+            0: "Demo-0\nHombre de \n22 - 30  años que usa\nbusqueda organica tiene\nmembresia gratis \nY paga con TC",
+            1: "Demo-1\nMujer de \n35 - 42 años\nbusqueda organica\nmembresia gratis \nY paga con TC",
+            2: "Demo-2\nMujer de \n47- 58 años\nbusqueda organica\nmembresia gratis \nY paga con TC"
         }
+
 
         # Ordenar y renombrar índices
         pivot = pivot.reindex(sorted(pivot.index), axis=0)
@@ -1359,41 +1246,6 @@ with tab_cruce:
         </div>
         """, unsafe_allow_html=True)
 
-        # ── Comparativa 3D K-Means vs LCA (socio) ──
-        st.markdown("---")
-        st.markdown("#### 🌐 Comparación 3D: K-Means vs LCA – Variables Sociodemográficas")
-
-        col_3d1, col_3d2 = st.columns(2)
-
-        with col_3d1:
-            df_3d_km = df.copy()
-            df_3d_km['Cluster'] = df_3d_km['cluster_sociodemografico'].astype(str).map(lambda x: f"KM-{x}")
-            fig_3d_km_socio = px.scatter_3d(
-                df_3d_km, x='age', y='region_code', z='monetary',
-                color='Cluster', color_discrete_sequence=CLUSTER_COLORS_3,
-                title='<b>K-Means Sociodemográfico (k=3)</b>',
-                labels={'age': 'Edad', 'region_code': 'Región', 'monetary': 'Gasto (USD)'},
-                opacity=0.65, height=450,
-            )
-            fig_3d_km_socio.update_traces(marker=dict(size=3.5))
-            fig_3d_km_socio.update_layout(template='plotly_dark', font=dict(family='Inter'),
-                                           margin=dict(l=0, r=0, b=0, t=50))
-            st.plotly_chart(fig_3d_km_socio, use_container_width=True)
-
-        with col_3d2:
-            df_3d_lca_s = df.copy()
-            df_3d_lca_s['Clase'] = df_3d_lca_s['cluster_sociodemografico_lca'].astype(str).map(lambda x: f"LCA-{x}")
-            fig_3d_lca_socio_comp = px.scatter_3d(
-                df_3d_lca_s, x='age', y='region_code', z='monetary',
-                color='Clase', color_discrete_sequence=CLUSTER_COLORS_3,
-                title='<b>LCA Sociodemográfico (k=3)</b>',
-                labels={'age': 'Edad', 'region_code': 'Región', 'monetary': 'Gasto (USD)'},
-                opacity=0.65, height=450,
-            )
-            fig_3d_lca_socio_comp.update_traces(marker=dict(size=3.5))
-            fig_3d_lca_socio_comp.update_layout(template='plotly_dark', font=dict(family='Inter'),
-                                                  margin=dict(l=0, r=0, b=0, t=50))
-            st.plotly_chart(fig_3d_lca_socio_comp, use_container_width=True)
 
         # ── Parallel Categories ──
         st.markdown("---")
@@ -1464,7 +1316,7 @@ with tab_cruce:
 
 
 # ════════════════════════════════════════════
-# TAB 8: ESTRATEGIA COMERCIAL
+# TAB 10: ESTRATEGIA COMERCIAL
 # ════════════════════════════════════════════
 with tab_estrategia:
     st.markdown('<div class="section-title">🎯 Estrategia Comercial: Categorías y Segmentos</div>', unsafe_allow_html=True)
@@ -1664,177 +1516,165 @@ with tab_estrategia:
     )
 
     # ────────────────────────────────────────────
-    # SECCIÓN 4: ESTRATEGIA POR SEGMENTO
+    # SECCIÓN 4: RECOMENDACIONES ESTRATÉGICAS – SEGMENTO CLIENTE OCASIONAL
     # ────────────────────────────────────────────
     st.markdown("---")
-    st.markdown("### 🎯 4. Recomendaciones Estratégicas por Segmento RFM (K-Means, k=4)")
+    st.markdown("### 🎯 4. Recomendaciones Estratégicas: Segmento Cliente Ocasional (`df_target_selectiva`)")
 
-    # Enriquecer df con cluster RFM
-    cluster_col = 'cluster_rfmkmeans'
-    if cluster_col not in df.columns:
-        st.warning("Ejecuta primero la pestaña K-Means RFM para generar los clusters.")
+    has_lca_rfm_strat = 'lca_cluster_rfm' in df.columns
+    has_lca_socio_strat = 'cluster_sociodemografico_lca' in df.columns
+
+    if not has_lca_rfm_strat or not has_lca_socio_strat:
+        st.warning("Para ver el análisis del segmento ocasional, activa los modelos LCA desde el sidebar y ejecuta primero las pestañas LCA.")
     else:
-        df_strat = df_customers_raw.copy()
-        df_strat['cluster_rfm'] = df['cluster_rfmkmeans'].values
-        df_strat = df_strat.rename(columns={'days_since_last_purchase': 'recency',
-                                             'total_orders': 'frequency',
-                                             'total_spend_usd': 'monetary'})
+        st.markdown("""
+        <div class="info-box">
+        <strong>Definición del segmento:</strong> Clientes con <strong>Clase RFM-0</strong>
+        (Cliente de entrada / Ocasional, ≈$629 USD) y perfil demográfico <strong>Demo-1</strong>
+        (mujer ~[35 - 42] años, búsqueda orgánica, membresía Free, paga con Tarjeta de Crédito).<br>
+        <strong>Filtro aplicado:</strong> <code>lca_cluster_rfm == 0</code> AND <code>cluster_sociodemografico_lca == 1</code>
+        </div>
+        """, unsafe_allow_html=True)
 
-        # Merge con órdenes
-        df_merged_seg = df_orders_raw.merge(
-            df_strat[['customer_id', 'cluster_rfm', 'recency', 'frequency',
-                       'monetary', 'membership_tier', 'preferred_category']],
-            on='customer_id', how='left'
-        )
+        # Crear df_target_ocasional
+        df_target_ocasional = df[
+            (df['cluster_sociodemografico_lca'] == 1) &
+            (df['lca_cluster_rfm'] == 0)
+        ].copy()
 
-        # Revenue por cluster × categoría de producto
-        seg_rev = df_merged_seg.groupby(['cluster_rfm', 'category']).agg(
-            revenue=('total_amount_usd', 'sum'),
-            n_orders=('order_id', 'count'),
-            pct_devuelto=('returned', 'mean'),
-            desc_medio=('discount_pct', 'mean'),
-        ).reset_index()
+        # KPIs del segmento
+        t1, t2, t3, t4 = st.columns(4)
+        t1.metric("Clientes en segmento", f"{len(df_target_ocasional):,}",
+                  delta=f"{len(df_target_ocasional)/len(df)*100:.1f}% del total")
+        t2.metric("Monetary medio", f"${df_target_ocasional['monetary'].mean():,.0f}")
+        t3.metric("Recency media", f"{df_target_ocasional['recency'].mean():.0f} dias")
+        t4.metric("Frecuencia media", f"{df_target_ocasional['frequency'].mean():.1f}")
 
-        # Pivot heatmap
-        pivot_seg_cat = seg_rev.pivot_table(
-            index='cluster_rfm', columns='category',
-            values='revenue', fill_value=0
-        )
-        pivot_seg_cat.index = [f"Cluster {i}" for i in pivot_seg_cat.index]
+        st.markdown("---")
 
-        fig_seg_cat = px.imshow(
-            pivot_seg_cat.values,
-            x=pivot_seg_cat.columns.tolist(),
-            y=pivot_seg_cat.index.tolist(),
-            color_continuous_scale='YlGnBu',
-            text_auto=False,
-            title='<b>Revenue por Cluster RFM × Categoría de Producto</b>',
-            aspect='auto',
-            labels=dict(color='Revenue (USD)', x='Categoría', y='Cluster RFM'),
-        )
-        fig_seg_cat.update_xaxes(tickangle=-40)
-        fig_seg_cat.update_layout(template='plotly_dark', height=380, font=dict(family='Inter', size=11))
-        st.plotly_chart(fig_seg_cat, use_container_width=True)
+        # Filtrar df_merged con los IDs del segmento
+        target_ids = df_target_ocasional['customer_id'].values
+        df_merged_target = df_merged[df_merged['customer_id'].isin(target_ids)].copy()
 
-        # Top categoría por cluster
-        top_cat_por_cluster = seg_rev.loc[seg_rev.groupby('cluster_rfm')['revenue'].idxmax()][['cluster_rfm', 'category', 'revenue', 'pct_devuelto', 'desc_medio']].copy()
-        top_cat_por_cluster.columns = ['Cluster RFM', 'Top Categoría', 'Revenue', 'Tasa Devolución', 'Desc. Medio (%)']
-        top_cat_por_cluster['Cluster RFM'] = top_cat_por_cluster['Cluster RFM'].map(lambda x: f"Cluster {x}")
-
-        # Perfil de cada cluster (para las recomendaciones)
-        perfil_strat = df_strat.groupby('cluster_rfm').agg(
-            recency=('recency', 'mean'),
-            frequency=('frequency', 'mean'),
-            monetary=('monetary', 'mean'),
-            n_clientes=('customer_id', 'count'),
-        ).round(1)
-
-        # Cards de recomendación
-        st.markdown("#### 📈 Recomendaciones por Cluster")
-
-        ESTRATEGIAS = {
-            'Alto Valor / Alta Frecuencia': (
-                "Programas de fidelidad premium, acceso anticipado a nuevos productos, "
-                "descuentos exclusivos en su categoría top y productos complementarios de alto margen."
-            ),
-            'Valor Medio / Riesgo Churn': (
-                "Campañas de reactivación por email/SMS, descuentos moderados (10–15%) en su "
-                "categoría preferida, recordatorios personalizados de wishlist."
-            ),
-            'Bajo Valor / Potencial Crecimiento': (
-                "Ofertas de entrada agresivas, bundles económicos, suscripciones al newsletter "
-                "con cupón de bienvenida, productos de menor ticket en su categoría preferida."
-            ),
-            'Nuevo / Explorador': (
-                "Onboarding personalizado, recomendaciones de su categoría preferida, "
-                "incentivos para segunda compra (cashback o envío gratis)."
-            ),
-        }
-
-        n_clusters = perfil_strat.shape[0]
-        perfil_sorted = perfil_strat.sort_values('monetary', ascending=False)
-        estrategia_labels = list(ESTRATEGIAS.keys())
-
-        cols_rec = st.columns(n_clusters)
-        for idx_col, (cluster_id, row) in enumerate(perfil_sorted.iterrows()):
-            top_row = top_cat_por_cluster[top_cat_por_cluster['Cluster RFM'] == f"Cluster {cluster_id}"]
-            top_cat = top_row.iloc[0]['Top Categoría'] if len(top_row) > 0 else 'N/A'
-            top_rev = top_row.iloc[0]['Revenue'] if len(top_row) > 0 else 0
-            etiqueta = estrategia_labels[min(idx_col, len(estrategia_labels)-1)]
-            color = CLUSTER_COLORS_4[cluster_id % 4]
-            cols_rec[idx_col].markdown(f"""
-            <div style="background:rgba(22,27,34,.95); border:1.5px solid {color}50;
-                        border-radius:14px; padding:18px 16px; height:100%;">
-                <div style="font-size:.75rem; color:{color}; font-weight:700;
-                            text-transform:uppercase; letter-spacing:.06em;">Cluster {cluster_id}</div>
-                <div style="font-size:1.1rem; font-weight:800; margin:6px 0 4px;">{etiqueta}</div>
-                <hr style="border-color:{color}30; margin:8px 0;">
-                <div style="font-size:.82rem; color:#8b949e; line-height:1.5;">
-                    <b style="color:#e6edf3;">Recency:</b> {row['recency']:.0f}d &nbsp;
-                    <b style="color:#e6edf3;">Freq:</b> {row['frequency']:.1f} &nbsp;
-                    <b style="color:#e6edf3;">Monetary:</b> ${row['monetary']:,.0f}<br>
-                    <b style="color:#e6edf3;">Clientes:</b> {row['n_clientes']:,}<br>
-                    <b style="color:#e6edf3;">Top categoría:</b> {top_cat}<br>
-                    <b style="color:#e6edf3;">Revenue top:</b> ${top_rev:,.0f}
-                </div>
-                <hr style="border-color:{color}30; margin:8px 0;">
-                <div style="font-size:.80rem; color:#94a3b8; line-height:1.6;">
-                    <b style="color:#e6edf3;">💡 Estrategia:</b><br>{ESTRATEGIAS[etiqueta]}
-                </div>
+        if len(df_merged_target) > 0:
+            st.markdown("#### Analisis de Venta Cruzada: Que compran segun su Categoria Preferida?")
+            st.markdown("""
+            <div class="info-box">
+            Filas = categoría preferida del cliente · Columnas = categoría real comprada en sus órdenes.<br>
+            Las celdas más oscuras son las mejores oportunidades de <strong>cross-selling</strong> para este segmento.
             </div>
             """, unsafe_allow_html=True)
 
-        st.markdown("")
+            # Matriz de complementariedad
+            matriz_comp2 = pd.crosstab(
+                df_merged_target['preferred_category'],
+                df_merged_target['category'],
+                normalize='index'
+            ) * 100
 
-        # Tabla resumen
+            fig_matriz2 = px.imshow(
+                matriz_comp2.values,
+                x=matriz_comp2.columns.tolist(),
+                y=matriz_comp2.index.tolist(),
+                color_continuous_scale='Blues',
+                text_auto='.1f',
+                aspect='auto',
+                labels=dict(color='% Ordenes', x='Categoria Comprada', y='Categoria Preferida'),
+            )
+            fig_matriz2.update_layout(
+                title='<b>Analisis de Venta Cruzada - Segmento Cliente Ocasional (Demo-0 x RFM-0)<br>'
+                      '(% de ordenes: Filas = Cat. Preferida | Columnas = Cat. Comprada)</b>',
+                template='plotly_dark', height=560,
+                font=dict(family='Inter', size=10),
+            )
+            fig_matriz2.update_xaxes(tickangle=-40)
+            st.plotly_chart(fig_matriz2, use_container_width=True)
+
+            # Top 10 oportunidades de cross-sell en el segmento
+            cross_seg = df_merged_target.groupby(['preferred_category', 'category']).agg(
+                n_ordenes=('order_id', 'count'),
+                revenue=('total_amount_usd', 'sum'),
+                n_clientes=('customer_id', 'nunique'),
+            ).reset_index()
+            cross_seg = cross_seg[cross_seg['preferred_category'] != cross_seg['category']]
+            cross_seg = cross_seg.sort_values('revenue', ascending=False).head(10).reset_index(drop=True)
+            cross_seg.columns = ['Cat. Preferida', 'Cat. Cross-sell', '# Ordenes', 'Revenue', '# Clientes']
+
+            st.markdown("**Top 10 oportunidades de cross-selling - Segmento Ocasional:**")
+            st.dataframe(
+                cross_seg.style.format({'Revenue': '${:,.0f}'})
+                .background_gradient(subset=['Revenue'], cmap='YlOrRd'),
+                use_container_width=True
+            )
+        else:
+            st.info("No se encontraron ordenes para clientes de este segmento.")
+
+        # Perfil descriptivo del segmento
         st.markdown("---")
-        st.markdown("#### 📋 Tabla Resumen: Top Categoría y Métricas por Cluster")
-        # Normalizar el índice de perfil_strat a "Cluster X" (string) para que coincida
-        # con top_cat_por_cluster['Cluster RFM'] que ya tiene ese formato
-        perfil_strat_str = perfil_strat.copy()
-        perfil_strat_str.index = [f"Cluster {i}" for i in perfil_strat_str.index]
-        perfil_strat_str.index.name = 'cluster_rfm'
-        tbl_resumen = top_cat_por_cluster.merge(
-            perfil_strat_str.rename(columns={'recency': 'Recency (días)', 'frequency': 'Frequency',
-                                              'monetary': 'Monetary ($)', 'n_clientes': '# Clientes'})
-            .reset_index().rename(columns={'cluster_rfm': 'Cluster RFM'}),
-            on='Cluster RFM', how='left'
-        )
-        tbl_resumen = tbl_resumen.drop_duplicates(subset=['Cluster RFM'])
+        st.markdown("#### Perfil Descriptivo del Segmento Ocasional")
+        perfil_cols_disp = ['age', 'recency', 'frequency', 'monetary']
+        perfil_target_stats = df_target_ocasional[perfil_cols_disp].describe().round(2).loc[['mean', 'std', 'min', '50%', 'max']]
+        perfil_target_stats.index = ['Media', 'Desv. Est.', 'Minimo', 'Mediana', 'Maximo']
+        perfil_target_stats.columns = ['Edad', 'Recency (dias)', 'Frequency', 'Monetary (USD)']
         st.dataframe(
-            tbl_resumen[['Cluster RFM', 'Top Categoría', 'Revenue', 'Tasa Devolución',
-                          'Desc. Medio (%)', 'Recency (días)', 'Frequency', 'Monetary ($)', '# Clientes']]
-            .style.format({
-                'Revenue': '${:,.0f}',
-                'Tasa Devolución': '{:.1%}',
-                'Desc. Medio (%)': '{:.1f}%',
-                'Recency (días)': '{:.0f}',
-                'Frequency': '{:.1f}',
-                'Monetary ($)': '${:,.0f}',
-            })
-            .background_gradient(subset=['Revenue'], cmap='Greens')
-            .background_gradient(subset=['Monetary ($)'], cmap='Blues'),
+            perfil_target_stats.style.format("{:.2f}")
+            .background_gradient(cmap='Blues'),
             use_container_width=True
         )
 
         # ────────────────────────────────────────────
-        # SECCIÓN 5: TENDENCIA MENSUAL
+        # GRÁFICOS DE RESPALDO PARA LA ESTRATEGIA
         # ────────────────────────────────────────────
         st.markdown("---")
-        st.markdown("### 📅 5. Evolución Mensual de Revenue por Categoría")
+        st.markdown("#### 📈 Gráficos de Respaldo Estratégico")
+        
+        col_resp1, col_resp2 = st.columns(2)
+        
+        with col_resp1:
+            st.markdown("**1. Categorías más compradas por el segmento** *(Justifica descuentos por volumen)*")
+            top_cat_seg = df_merged_target.groupby('category')['quantity'].sum().sort_values(ascending=False).reset_index()
+            fig_top_cat = px.bar(
+                top_cat_seg, x='quantity', y='category', orientation='h',
+                color='quantity', color_continuous_scale='viridis',
+                labels={'quantity': 'Cantidad Total Comprada', 'category': 'Categoría'}
+            )
+            fig_top_cat.update_layout(template='plotly_dark', height=400, font=dict(family='Inter', size=11))
+            fig_top_cat.update_yaxes(autorange="reversed")
+            st.plotly_chart(fig_top_cat, use_container_width=True)
 
-        top_cats = cat_summary.head(6)['Categoría'].tolist()
-        monthly_top = monthly_cat[monthly_cat['category'].isin(top_cats)].copy()
+        with col_resp2:
+            st.markdown("**2. Impacto de la Membresía en el Gasto Total** *(Justifica incentivos de membresía)*")
+            # Este gráfico se calcula sobre la base completa de clientes (df) para validar la diferencia entre tiers
+            membership_spend = df.groupby('membership_tier')['monetary'].mean().sort_values(ascending=False).reset_index()
+            fig_mem_spend = px.bar(
+                membership_spend, x='membership_tier', y='monetary',
+                color='monetary', color_continuous_scale='magma',
+                labels={'monetary': 'Gasto Promedio Total (USD)', 'membership_tier': 'Nivel de Membresía'}
+            )
+            fig_mem_spend.update_layout(template='plotly_dark', height=400, font=dict(family='Inter', size=11))
+            st.plotly_chart(fig_mem_spend, use_container_width=True)
 
-        fig_monthly = px.line(
-            monthly_top, x='period', y='revenue', color='category',
-            title='<b>Revenue Mensual – Top 6 Categorías</b>',
-            labels={'period': 'Período', 'revenue': 'Revenue (USD)', 'category': 'Categoría'},
-            color_discrete_sequence=px.colors.qualitative.Set1,
-        )
-        fig_monthly.update_layout(template='plotly_dark', height=420, font=dict(family='Inter'),
-                                   hovermode='x unified')
-        st.plotly_chart(fig_monthly, use_container_width=True)
+    # ────────────────────────────────────────────
+    # SECCIÓN 5: EVOLUCIÓN MENSUAL POR CATEGORÍA
+    # ────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### 📅 5. Evolución Mensual de Revenue por Categoría")
+
+
+    top_cats = cat_summary.head(6)['Categoría'].tolist()
+    monthly_top = monthly_cat[monthly_cat['category'].isin(top_cats)].copy()
+
+    fig_monthly = px.line(
+        monthly_top, x='period', y='revenue', color='category',
+        title='<b>Revenue Mensual – Top 6 Categorías</b>',
+        labels={'period': 'Período', 'revenue': 'Revenue (USD)', 'category': 'Categoría'},
+        color_discrete_sequence=px.colors.qualitative.Set1,
+    )
+    fig_monthly.update_layout(template='plotly_dark', height=420, font=dict(family='Inter'),
+                               hovermode='x unified')
+    st.plotly_chart(fig_monthly, use_container_width=True)
+
+
 
 
 # ─────────────────────────────────────────────
