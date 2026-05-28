@@ -25,7 +25,7 @@ warnings.filterwarnings("ignore")
 # ─────────────────────────────────────────────
 st.set_page_config(
     page_title="Trabajo 2 – Segmentación de Mercado | Grupo 29",
-    page_icon="📊",
+    page_icon="Images.png",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -238,7 +238,7 @@ PAYMENT_INV = {v: k for k, v in PAYMENT_MAP.items()}
 
 CLUSTER_COLORS_4 = ['#7c3aed', '#2563eb', '#059669', '#d97706']
 CLUSTER_COLORS_5 = ['#64748b'] + CLUSTER_COLORS_4  # Gris para el grupo -1
-CLUSTER_COLORS_LCA4 = ['#64748b', '#0ea5e9', '#f43f5e', '#10b981']  # Gris + 3 clusters de LCA
+CLUSTER_COLORS_LCA4 = ['#10b981', '#0ea5e9', '#64748b', '#f43f5e']  # Verde + Azul claro + Gris + Rosa
 CLUSTER_COLORS_3 = ['#7c3aed', '#2563eb', '#059669']
 
 # ─────────────────────────────────────────────
@@ -351,14 +351,6 @@ st.sidebar.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.markdown("---")
-
-st.sidebar.markdown("### ⚙️ Opciones de análisis")
-
-show_raw_data = st.sidebar.checkbox("Mostrar datos crudos", value=False)
-run_lca = st.sidebar.checkbox("Ejecutar modelos LCA (StepMix)", value=True,
-                               help="Requiere que stepmix esté instalado. El cálculo puede tardar unos segundos.")
-
-st.sidebar.markdown("---")
 with st.sidebar.expander("📖 Acerca del análisis"):
     st.markdown("""
     **Metodologías:**
@@ -380,9 +372,19 @@ st.sidebar.caption("Francisco Araneda · Benjamín Borquez · Martín Lagos · C
 # ─────────────────────────────────────────────
 # HERO HEADER
 # ─────────────────────────────────────────────
-st.markdown("""
+import base64
+import os
+
+logo_img_tag = ""
+if os.path.exists("Images.png"):
+    with open("Images.png", "rb") as f:
+        encoded = base64.b64encode(f.read()).decode("utf-8")
+        logo_img_tag = f'<img src="data:image/jpeg;base64,{encoded}" alt="Logo" style="height: 70px; margin-bottom: 15px; border-radius: 12px; object-fit: cover;">'
+
+st.markdown(f"""
 <div class="hero-banner">
-    <h1>📊 Segmentación de Mercado</h1>
+    {logo_img_tag}
+    <h1> Segmentación de Mercado</h1>
     <p>Análisis comparativo de <strong>K-Means</strong> y <strong>Latent Class Analysis (LCA)</strong>
        sobre variables RFM y sociodemográficas de clientes de e-commerce.</p>
     <p class="team">Grupo 29: Francisco Araneda, Benjamín Borquez, Martín Lagos, Camilo Mora, Isidora Salas</p>
@@ -399,6 +401,54 @@ k3.metric("💰 Gasto Promedio", f"${df_customers_raw['total_spend_usd'].mean():
 k4.metric("🔁 Frecuencia Media", f"{df_customers_raw['total_orders'].mean():.1f}")
 k5.metric("📅 Recency Media", f"{df_customers_raw['days_since_last_purchase'].mean():.0f}d")
 k6.metric("🌍 Países", f"{df_customers_raw['country'].nunique()}")
+
+st.markdown("---")
+
+# ─────────────────────────────────────────────
+# FUNCIONES AUXILIARES PARA GRÁFICOS
+# ─────────────────────────────────────────────
+def render_crosstabs(df, cluster_col, title_prefix="Cluster"):
+    st.markdown(f"#### 📊 Distribuciones Porcentuales por {title_prefix}")
+    tab_cross1, tab_cross2, tab_cross3 = st.tabs(["Membresía", "Canal de Adquisición", "Método de Pago"])
+    
+    def get_index_labels(idx):
+        return [f"{title_prefix} {i}" if i != -1 else "Grupo 18" for i in idx]
+
+    with tab_cross1:
+        tabla_pct_memb = pd.crosstab(df[cluster_col], df['membership_tier'], normalize='index') * 100
+        tabla_pct_memb.index = get_index_labels(tabla_pct_memb.index)
+        tabla_pct_memb.columns = [MEMBERSHIP_INV.get(c, str(c)) for c in tabla_pct_memb.columns]
+        st.dataframe(tabla_pct_memb.style.format("{:.1f}%").background_gradient(cmap='Blues'), use_container_width=True)
+        
+        tabla_pct_memb.index.name = 'Grupo'
+        tabla_pct_memb_reset = tabla_pct_memb.reset_index().melt(id_vars='Grupo', var_name='Membresía', value_name='%')
+        fig_memb_bar = px.bar(tabla_pct_memb_reset, x='Grupo', y='%', color='Membresía', barmode='stack', title=f'<b>Membresía por {title_prefix}</b>', color_discrete_sequence=px.colors.qualitative.Set2)
+        fig_memb_bar.update_layout(template='plotly_dark', height=360, font=dict(family='Inter'))
+        st.plotly_chart(fig_memb_bar, use_container_width=True)
+
+    with tab_cross2:
+        tabla_pct_acq = pd.crosstab(df[cluster_col], df['acquisition_channel'], normalize='index') * 100
+        tabla_pct_acq.index = get_index_labels(tabla_pct_acq.index)
+        tabla_pct_acq.columns = [ACQUISITION_INV.get(c, str(c)) for c in tabla_pct_acq.columns]
+        st.dataframe(tabla_pct_acq.style.format("{:.1f}%").background_gradient(cmap='Purples'), use_container_width=True)
+        
+        tabla_pct_acq.index.name = 'Grupo'
+        tabla_pct_acq_reset = tabla_pct_acq.reset_index().melt(id_vars='Grupo', var_name='Canal', value_name='%')
+        fig_acq_bar = px.bar(tabla_pct_acq_reset, x='Grupo', y='%', color='Canal', barmode='stack', title=f'<b>Canal de Adquisición por {title_prefix}</b>', color_discrete_sequence=px.colors.qualitative.Set3)
+        fig_acq_bar.update_layout(template='plotly_dark', height=360, font=dict(family='Inter'))
+        st.plotly_chart(fig_acq_bar, use_container_width=True)
+
+    with tab_cross3:
+        tabla_pct_pay = pd.crosstab(df[cluster_col], df['preferred_payment_method'], normalize='index') * 100
+        tabla_pct_pay.index = get_index_labels(tabla_pct_pay.index)
+        tabla_pct_pay.columns = [PAYMENT_INV.get(c, str(c)) for c in tabla_pct_pay.columns]
+        st.dataframe(tabla_pct_pay.style.format("{:.1f}%").background_gradient(cmap='Oranges'), use_container_width=True)
+        
+        tabla_pct_pay.index.name = 'Grupo'
+        tabla_pct_pay_reset = tabla_pct_pay.reset_index().melt(id_vars='Grupo', var_name='Método de Pago', value_name='%')
+        fig_pay_bar = px.bar(tabla_pct_pay_reset, x='Grupo', y='%', color='Método de Pago', barmode='stack', title=f'<b>Método de Pago por {title_prefix}</b>', color_discrete_sequence=px.colors.qualitative.Pastel)
+        fig_pay_bar.update_layout(template='plotly_dark', height=360, font=dict(family='Inter'))
+        st.plotly_chart(fig_pay_bar, use_container_width=True)
 
 st.markdown("---")
 
@@ -445,9 +495,6 @@ with tab_datos:
         else:
             st.success("✅ Sin valores nulos en customers.csv")
 
-        if show_raw_data:
-            st.dataframe(df_customers_raw.head(20), use_container_width=True)
-
     with col_b:
         st.markdown("#### 📦 Dataset de Órdenes (`orders.csv`)")
         st.markdown(f"""
@@ -466,9 +513,6 @@ with tab_datos:
             st.dataframe(nulls_o.to_frame("Nulos"), use_container_width=True)
         else:
             st.success("✅ Sin valores nulos en orders.csv")
-
-        if show_raw_data:
-            st.dataframe(df_orders_raw.head(20), use_container_width=True)
 
     st.markdown("---")
     st.markdown('<div class="section-title">Estadísticas Descriptivas – Variables RFM</div>', unsafe_allow_html=True)
@@ -502,9 +546,28 @@ with tab_datos:
     st.plotly_chart(fig_rfm_hist, use_container_width=True)
 
     st.markdown("---")
+    st.markdown('<div class="section-title">Distribución de Edad</div>', unsafe_allow_html=True)
+    
+    fig_age_hist = px.histogram(df_customers_raw, x="age", nbins=40,
+                                title='<b>Distribución de Edad (Destacando concentración en 18 años)</b>',
+                                color_discrete_sequence=['#d97706'],
+                                opacity=0.8)
+    
+    fig_age_hist.add_vline(x=18, line_width=3, line_dash="dash", line_color="#ff4b4b",
+                           annotation_text="Fuerte concentración en Age=18", annotation_position="top right",
+                           annotation_font=dict(size=14, color="#ff4b4b", weight="bold"))
+                           
+    fig_age_hist.update_layout(
+        template='plotly_dark', height=350,
+        font=dict(family='Inter'),
+        xaxis_title='Edad', yaxis_title='Cantidad de Clientes'
+    )
+    st.plotly_chart(fig_age_hist, use_container_width=True)
+
+    st.markdown("---")
     st.markdown('<div class="section-title">Encodings Aplicados (del Notebook)</div>', unsafe_allow_html=True)
 
-    enc_col1, enc_col2, enc_col3 = st.columns(3)
+    enc_col1, enc_col2, enc_col3,enc_col4 = st.columns(4)
     with enc_col1:
         st.markdown("**Género**")
         st.dataframe(pd.DataFrame.from_dict(GENDER_MAP, orient='index', columns=['Código']), use_container_width=True)
@@ -514,9 +577,11 @@ with tab_datos:
         st.markdown("**Canal de Adquisición**")
         st.dataframe(pd.DataFrame.from_dict(ACQUISITION_MAP, orient='index', columns=['Código']), use_container_width=True)
     with enc_col3:
-        st.markdown("**Región**")
-        st.dataframe(pd.DataFrame.from_dict(REGION_CODE, orient='index', columns=['Código']), use_container_width=True)
-
+        st.markdown("**Método de Pago**")
+        st.dataframe(pd.DataFrame.from_dict(PAYMENT_MAP, orient='index', columns=['Código']), use_container_width=True)
+    with enc_col4:
+        st.markdown("**Categoría**")
+        st.dataframe(pd.DataFrame.from_dict(CATEGORY_MAP, orient='index', columns=['Código']), use_container_width=True)
 
 # ════════════════════════════════════════════
 # TAB 2: K-MEANS RFM
@@ -571,7 +636,7 @@ with tab_rfm_kmeans:
             color_discrete_sequence=CLUSTER_COLORS_4,
             hole=0.42,
         )
-        fig_pie_rfm.update_traces(textposition='inside', textinfo='percent+label', textfont_size=13)
+        fig_pie_rfm.update_traces(textposition='inside', textinfo='percent+label', textfont_size=13, sort=False)
         fig_pie_rfm.update_layout(template='plotly_dark', height=380, font=dict(family='Inter'),
                                    legend=dict(orientation='h', y=-0.1))
         st.plotly_chart(fig_pie_rfm, use_container_width=True)
@@ -596,6 +661,8 @@ with tab_rfm_kmeans:
                 <span style="color:#e6edf3; font-weight:700; min-width:60px;">{count:,} ({pct:.1f}%)</span>
             </div>
             """, unsafe_allow_html=True)
+
+    render_crosstabs(df, 'cluster_rfmkmeans', 'Cluster')
 
 
 
@@ -651,7 +718,7 @@ with tab_socio_kmeans:
             title='<b>Distribución por cluster sociodemográfico</b>',
             color_discrete_sequence=CLUSTER_COLORS_5, hole=0.42,
         )
-        fig_pie_socio.update_traces(textposition='inside', textinfo='percent+label', textfont_size=13)
+        fig_pie_socio.update_traces(textposition='inside', textinfo='percent+label', textfont_size=13, sort=False)
         fig_pie_socio.update_layout(template='plotly_dark', height=380, font=dict(family='Inter'))
         st.plotly_chart(fig_pie_socio, use_container_width=True)
     with col_s2:
@@ -659,24 +726,8 @@ with tab_socio_kmeans:
         for cluster_raw, count in cluster_counts_socio.items():
             pct = count / len(df) * 100
             cluster=int(cluster_raw)
-            if cluster == -1:
-                color = '#d97706'  # Naranja
-                label_text = "Grupo 18"
-            elif cluster == 0:
-                color = '#64748b'  # Gris
-                label_text = "Cluster 0"
-            elif cluster == 1:
-                color = '#7c3aed'  # Morado
-                label_text = "Cluster 1"
-            elif cluster == 2:
-                color = '#059669'  # Verde
-                label_text = "Cluster 2"
-            elif cluster == 3:
-                color = '#2563eb'  # Azul
-                label_text = "Cluster 3"
-            else:
-                color = '#64748b'
-                label_text = f"Cluster {cluster}"
+            color = CLUSTER_COLORS_5[cluster + 1]
+            label_text = "Grupo 18" if cluster == -1 else f"Cluster {cluster}"
                 
             st.markdown(f"""
             <div style="display:flex; align-items:center; gap:12px; margin:8px 0;
@@ -694,6 +745,7 @@ with tab_socio_kmeans:
             </div>
             """, unsafe_allow_html=True)    
 
+    render_crosstabs(df, 'cluster_sociodemografico', 'Cluster')
 
 
 
@@ -704,9 +756,7 @@ with tab_socio_kmeans:
 with tab_lca_rfm:
     st.markdown('<div class="section-title">Latent Class Analysis (LCA) – Variables RFM</div>', unsafe_allow_html=True)
 
-    if not run_lca:
-        st.info("ℹ️ El análisis LCA está desactivado. Actívalo desde el sidebar.")
-    else:
+    if True:
         st.markdown("""
         <div class="info-box">
         <strong>Variables:</strong> Recency, Frequency, Monetary (tratadas como gaussianas)<br>
@@ -752,7 +802,7 @@ with tab_lca_rfm:
                     title='<b>Distribución de clientes por clase LCA RFM</b>',
                     color_discrete_sequence=CLUSTER_COLORS_4, hole=0.42,
                 )
-                fig_pie_lca_rfm.update_traces(textposition='inside', textinfo='percent+label', textfont_size=13)
+                fig_pie_lca_rfm.update_traces(textposition='inside', textinfo='percent+label', textfont_size=13, sort=False)
                 fig_pie_lca_rfm.update_layout(template='plotly_dark', height=380, font=dict(family='Inter'))
                 st.plotly_chart(fig_pie_lca_rfm, use_container_width=True)
             with col_lca2:
@@ -760,21 +810,8 @@ with tab_lca_rfm:
                 for cluster_raw, count in cluster_counts_lca_rfm.items():
                     pct = count / len(df) * 100
                     cluster=int(cluster_raw)
-                    if cluster == 0:
-                        color = '#7c3aed'  # Morado
-                        label_text = "Cluster 0"
-                    elif cluster == 1:
-                        color = '#059669'  # Verde
-                        label_text = "Cluster 1"
-                    elif cluster == 2:
-                        color = '#d97706'  # Naranja
-                        label_text = "Cluster 2"
-                    elif cluster == 3:
-                        color = '#2563eb'  # Azul
-                        label_text = "Cluster 3"
-                    else:
-                        color = '#d97706'
-                        label_text = f"Cluster {cluster}"
+                    color = CLUSTER_COLORS_4[cluster]
+                    label_text = f"Clase {cluster}"
                     
                     st.markdown(f"""<div style="display:flex; align-items:center; gap:12px; margin:8px 0;
                         background:rgba(22,27,34,.8); border:1px solid #30363d;
@@ -791,7 +828,7 @@ with tab_lca_rfm:
             </div>
             """, unsafe_allow_html=True)    
                 
-
+    render_crosstabs(df, 'lca_cluster_rfm', 'Clase')
 
 
 
@@ -801,9 +838,7 @@ with tab_lca_rfm:
 with tab_lca_socio:
     st.markdown('<div class="section-title">Latent Class Analysis (LCA) – Variables Sociodemográficas</div>', unsafe_allow_html=True)
 
-    if not run_lca:
-        st.info("ℹ️ El análisis LCA está desactivado. Actívalo desde el sidebar.")
-    else:
+    if True:
         st.markdown("""
         <div class="info-box">
         <strong>Variables:</strong> gender (cat.), acquisition_channel (cat.), membership_tier (cat.), preferred_payment_method (cat.), age (gaussiana)<br>
@@ -850,70 +885,48 @@ with tab_lca_socio:
                     title='<b>Distribución por clase LCA Sociodemográfico</b>',
                     color_discrete_sequence=CLUSTER_COLORS_LCA4, hole=0.42,
                 )
-                fig_pie_lca_socio.update_traces(textposition='inside', textinfo='percent+label', textfont_size=13)
+                fig_pie_lca_socio.update_traces(textposition='inside', textinfo='percent+label', textfont_size=13, sort=False)
                 fig_pie_lca_socio.update_layout(template='plotly_dark', height=380, font=dict(family='Inter'))
                 st.plotly_chart(fig_pie_lca_socio, use_container_width=True)
 
             with col_s_lca2:
-                # Scatter Age vs Monetary coloreado por LCA socio
-                df_lca_s_plot = df.copy()
-                df_lca_s_plot['Clase'] = df_lca_s_plot['cluster_sociodemografico_lca'].astype(str).map(
-                    lambda x: "Grupo 18" if x == "-1" else f"Clase {x}"
-                )
-                df_lca_s_plot = df_lca_s_plot.sort_values('cluster_sociodemografico_lca')
-                fig_lca_age_mon = px.scatter(
-                    df_lca_s_plot, x='age', y='monetary',
-                    color='Clase', color_discrete_sequence=CLUSTER_COLORS_LCA4,
-                    title='<b>LCA Sociodemográfico – Age vs Monetary</b>',
-                    labels={'age': 'Edad', 'monetary': 'Gasto Total (USD)'},
-                    opacity=0.55, height=380,
-                )
-                fig_lca_age_mon.update_layout(template='plotly_dark', font=dict(family='Inter'))
-                st.plotly_chart(fig_lca_age_mon, use_container_width=True)
+                st.markdown("**Clientes por cluster:**")
+                for cluster_raw, count in counts_lca_socio.items():
+                    pct = count / len(df) * 100
+                    cluster = int(cluster_raw)
+                    if cluster == -1:
+                        color = '#10b981'  # Verde
+                        label_text = "Grupo 18"
+                    elif cluster == 0:
+                        color = '#0ea5e9'  # Azul claro
+                        label_text = "Clase 0"
+                    elif cluster == 1:
+                        color = '#64748b'  # Gris
+                        label_text = "Clase 1"
+                    elif cluster == 2:
+                        color = '#f43f5e'  # Rosa
+                        label_text = "Clase 2"
+                    else:
+                        color = '#64748b'
+                        label_text = f"Clase {cluster}"
+                    
+                    st.markdown(f"""<div style="display:flex; align-items:center; gap:12px; margin:8px 0;
+                        background:rgba(22,27,34,.8); border:1px solid #30363d;
+                        border-radius:10px; padding:12px 16px;">
+                <span class="cluster-badge" style="background:{color}20; color:{color}; border:1px solid {color}60;">
+                    {label_text}
+                </span>
+                <div style="flex:1;">
+                    <div style="background:#30363d; border-radius:6px; height:8px; overflow:hidden;">
+                        <div style="width:{pct:.1f}%; height:100%; background:{color}; border-radius:6px;"></div>
+                    </div>
+                </div>
+                <span style="color:#e6edf3; font-weight:700; min-width:60px;">{count:,} ({pct:.1f}%)</span>
+            </div>
+            """, unsafe_allow_html=True)
 
-            # Crosstabs de distribuciones
-            st.markdown("#### 📊 Distribuciones Porcentuales por Clase")
+            render_crosstabs(df, 'cluster_sociodemografico_lca', 'Clase')
 
-            tab_cross1, tab_cross2 = st.tabs(["Membresía por Clase", "Canal de Adquisición por Clase"])
-
-            with tab_cross1:
-                tabla_pct_memb = pd.crosstab(df['cluster_sociodemografico_lca'],
-                                              df['membership_tier'],
-                                              normalize='index') * 100
-                tabla_pct_memb.index = [f"Clase {i}" if i != -1 else "Grupo 18" for i in tabla_pct_memb.index]
-                tabla_pct_memb.columns = [MEMBERSHIP_INV.get(c, str(c)) for c in tabla_pct_memb.columns]
-                st.dataframe(tabla_pct_memb.style.format("{:.1f}%")
-                             .background_gradient(cmap='Blues'), use_container_width=True)
-
-                # Stacked bar
-                tabla_pct_memb.index.name = 'Clase'
-                tabla_pct_memb_reset = tabla_pct_memb.reset_index().melt(id_vars='Clase',
-                                                                          var_name='Membresía', value_name='%')
-                fig_memb_bar = px.bar(tabla_pct_memb_reset, x='Clase', y='%',
-                                      color='Membresía', barmode='stack',
-                                      title='<b>Distribución de Membresía por Clase LCA</b>',
-                                      color_discrete_sequence=px.colors.qualitative.Set2)
-                fig_memb_bar.update_layout(template='plotly_dark', height=360, font=dict(family='Inter'))
-                st.plotly_chart(fig_memb_bar, use_container_width=True)
-
-            with tab_cross2:
-                tabla_pct_acq = pd.crosstab(df['cluster_sociodemografico_lca'],
-                                             df['acquisition_channel'],
-                                             normalize='index') * 100
-                tabla_pct_acq.index = [f"Clase {i}" if i != -1 else "Grupo 18" for i in tabla_pct_acq.index]
-                tabla_pct_acq.columns = [ACQUISITION_INV.get(c, str(c)) for c in tabla_pct_acq.columns]
-                st.dataframe(tabla_pct_acq.style.format("{:.1f}%")
-                             .background_gradient(cmap='Purples'), use_container_width=True)
-
-                tabla_pct_acq.index.name = 'Clase'
-                tabla_pct_acq_reset = tabla_pct_acq.reset_index().melt(id_vars='Clase',
-                                                                         var_name='Canal', value_name='%')
-                fig_acq_bar = px.bar(tabla_pct_acq_reset, x='Clase', y='%',
-                                     color='Canal', barmode='stack',
-                                     title='<b>Distribución de Canal de Adquisición por Clase LCA</b>',
-                                     color_discrete_sequence=px.colors.qualitative.Set3)
-                fig_acq_bar.update_layout(template='plotly_dark', height=360, font=dict(family='Inter'))
-                st.plotly_chart(fig_acq_bar, use_container_width=True)
 
 
 
@@ -1519,14 +1532,9 @@ with tab_estrategia:
     # SECCIÓN 4: RECOMENDACIONES ESTRATÉGICAS – SEGMENTO CLIENTE OCASIONAL
     # ────────────────────────────────────────────
     st.markdown("---")
-    st.markdown("### 🎯 4. Recomendaciones Estratégicas: Segmento Cliente Ocasional (`df_target_selectiva`)")
+    st.markdown("### 🎯 4. Recomendaciones Estratégicas: Segmento Adulta Selectiva (`df_target_selectiva`)")
 
-    has_lca_rfm_strat = 'lca_cluster_rfm' in df.columns
-    has_lca_socio_strat = 'cluster_sociodemografico_lca' in df.columns
-
-    if not has_lca_rfm_strat or not has_lca_socio_strat:
-        st.warning("Para ver el análisis del segmento ocasional, activa los modelos LCA desde el sidebar y ejecuta primero las pestañas LCA.")
-    else:
+    if True:
         st.markdown("""
         <div class="info-box">
         <strong>Definición del segmento:</strong> Clientes con <strong>Clase RFM-0</strong>
@@ -1600,7 +1608,7 @@ with tab_estrategia:
             cross_seg = cross_seg.sort_values('revenue', ascending=False).head(10).reset_index(drop=True)
             cross_seg.columns = ['Cat. Preferida', 'Cat. Cross-sell', '# Ordenes', 'Revenue', '# Clientes']
 
-            st.markdown("**Top 10 oportunidades de cross-selling - Segmento Ocasional:**")
+            st.markdown("**Top 10 oportunidades de cross-selling - Segmento Escogido:**")
             st.dataframe(
                 cross_seg.style.format({'Revenue': '${:,.0f}'})
                 .background_gradient(subset=['Revenue'], cmap='YlOrRd'),
@@ -1611,7 +1619,7 @@ with tab_estrategia:
 
         # Perfil descriptivo del segmento
         st.markdown("---")
-        st.markdown("#### Perfil Descriptivo del Segmento Ocasional")
+        st.markdown("#### Perfil Descriptivo del Segmento Escogido")
         perfil_cols_disp = ['age', 'recency', 'frequency', 'monetary']
         perfil_target_stats = df_target_ocasional[perfil_cols_disp].describe().round(2).loc[['mean', 'std', 'min', '50%', 'max']]
         perfil_target_stats.index = ['Media', 'Desv. Est.', 'Minimo', 'Mediana', 'Maximo']
