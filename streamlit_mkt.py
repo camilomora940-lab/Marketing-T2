@@ -1590,7 +1590,7 @@ with tab_estrategia:
                 labels=dict(color='% Ordenes', x='Categoria Comprada', y='Categoria Preferida'),
             )
             fig_matriz2.update_layout(
-                title='<b>Analisis de Venta Cruzada - Segmento Cliente Ocasional (Demo-0 x RFM-0)<br>'
+                title='<b>Analisis de Venta Cruzada - Segmento Cliente Ocasional (Demo-1 x RFM-0)<br>'
                       '(% de ordenes: Filas = Cat. Preferida | Columnas = Cat. Comprada)</b>',
                 template='plotly_dark', height=560,
                 font=dict(family='Inter', size=10),
