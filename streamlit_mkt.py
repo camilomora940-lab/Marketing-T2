@@ -1529,7 +1529,7 @@ with tab_estrategia:
     )
 
     # ────────────────────────────────────────────
-    # SECCIÓN 4: RECOMENDACIONES ESTRATÉGICAS – SEGMENTO CLIENTE OCASIONAL
+    # SECCIÓN 4: RECOMENDACIONES ESTRATÉGICAS – SEGMENTO CLIENTE adulta selectiva
     # ────────────────────────────────────────────
     st.markdown("---")
     st.markdown("### 🎯 4. Recomendaciones Estratégicas: Segmento Adulta Selectiva (`df_target_selectiva`)")
@@ -1544,24 +1544,24 @@ with tab_estrategia:
         </div>
         """, unsafe_allow_html=True)
 
-        # Crear df_target_ocasional
-        df_target_ocasional = df[
+        # Crear df_target_selectivo
+        df_target_selectivo = df[
             (df['cluster_sociodemografico_lca'] == 1) &
             (df['lca_cluster_rfm'] == 0)
         ].copy()
 
         # KPIs del segmento
         t1, t2, t3, t4 = st.columns(4)
-        t1.metric("Clientes en segmento", f"{len(df_target_ocasional):,}",
-                  delta=f"{len(df_target_ocasional)/len(df)*100:.1f}% del total")
-        t2.metric("Monetary medio", f"${df_target_ocasional['monetary'].mean():,.0f}")
-        t3.metric("Recency media", f"{df_target_ocasional['recency'].mean():.0f} dias")
-        t4.metric("Frecuencia media", f"{df_target_ocasional['frequency'].mean():.1f}")
+        t1.metric("Clientes en segmento", f"{len(df_target_selectivo):,}",
+                  delta=f"{len(df_target_selectivo)/len(df)*100:.1f}% del total")
+        t2.metric("Monetary medio", f"${df_target_selectivo['monetary'].mean():,.0f}")
+        t3.metric("Recency media", f"{df_target_selectivo['recency'].mean():.0f} dias")
+        t4.metric("Frecuencia media", f"{df_target_selectivo['frequency'].mean():.1f}")
 
         st.markdown("---")
 
         # Filtrar df_merged con los IDs del segmento
-        target_ids = df_target_ocasional['customer_id'].values
+        target_ids = df_target_selectivo['customer_id'].values
         df_merged_target = df_merged[df_merged['customer_id'].isin(target_ids)].copy()
 
         if len(df_merged_target) > 0:
@@ -1621,7 +1621,7 @@ with tab_estrategia:
         st.markdown("---")
         st.markdown("#### Perfil Descriptivo del Segmento Escogido")
         perfil_cols_disp = ['age', 'recency', 'frequency', 'monetary']
-        perfil_target_stats = df_target_ocasional[perfil_cols_disp].describe().round(2).loc[['mean', 'std', 'min', '50%', 'max']]
+        perfil_target_stats = df_target_selectivo[perfil_cols_disp].describe().round(2).loc[['mean', 'std', 'min', '50%', 'max']]
         perfil_target_stats.index = ['Media', 'Desv. Est.', 'Minimo', 'Mediana', 'Maximo']
         perfil_target_stats.columns = ['Edad', 'Recency (dias)', 'Frequency', 'Monetary (USD)']
         st.dataframe(
@@ -1661,6 +1661,49 @@ with tab_estrategia:
             )
             fig_mem_spend.update_layout(template='plotly_dark', height=400, font=dict(family='Inter', size=11))
             st.plotly_chart(fig_mem_spend, use_container_width=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("**3. Gasto y Popularidad según Método de Pago en el Segmento Escogido** *(Justifica ofertas en cuotas sin interés con TC)*")
+        
+        payment_stats = df_target_selectivo.groupby('preferred_payment_method').agg(
+            Promedio=('monetary', 'mean'),
+            Mediana=('monetary', 'median'),
+            Cantidad=('customer_id', 'count')
+        ).reset_index()
+        
+        payment_stats['Método de Pago'] = payment_stats['preferred_payment_method'].map(PAYMENT_INV)
+        payment_stats = payment_stats.sort_values(by='Promedio', ascending=False)
+        
+        payment_stats_money = payment_stats[['Método de Pago', 'Promedio', 'Mediana']].melt(
+            id_vars='Método de Pago', var_name='Métrica', value_name='Gasto (USD)'
+        )
+
+        col_pay1, col_pay2 = st.columns(2)
+        
+        with col_pay1:
+            fig_money = px.bar(
+                payment_stats_money, x='Método de Pago', y='Gasto (USD)', color='Métrica',
+                barmode='group', title='<b>Gasto Promedio y Mediana</b>',
+                color_discrete_sequence=['#10b981', '#3b82f6'],
+                text=payment_stats_money['Gasto (USD)'].map(lambda x: f"${x:,.0f}")
+            )
+            fig_money.update_traces(textposition='outside', textfont_size=10)
+            fig_money.update_layout(template='plotly_dark', height=400, font=dict(family='Inter', size=11),
+                                    legend=dict(orientation='h', y=1.15, x=0))
+            st.plotly_chart(fig_money, use_container_width=True)
+            
+        with col_pay2:
+            fig_count = px.bar(
+                payment_stats.sort_values('Cantidad', ascending=False), 
+                x='Método de Pago', y='Cantidad',
+                title='<b>Cantidad de Clientes (Popularidad)</b>',
+                color='Cantidad', color_continuous_scale='Purp',
+                text='Cantidad'
+            )
+            fig_count.update_traces(textposition='outside', textfont_size=12)
+            fig_count.update_layout(template='plotly_dark', height=400, font=dict(family='Inter', size=11),
+                                    coloraxis_showscale=False)
+            st.plotly_chart(fig_count, use_container_width=True)
 
     # ────────────────────────────────────────────
     # SECCIÓN 5: EVOLUCIÓN MENSUAL POR CATEGORÍA
